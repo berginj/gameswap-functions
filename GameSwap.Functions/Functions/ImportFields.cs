@@ -1,22 +1,24 @@
 using System.Net;
 using System.Text;
-using System.Text.Json;
 using Azure.Data.Tables;
 using Microsoft.Azure.Functions.Worker;
 using Microsoft.Azure.Functions.Worker.Http;
 using Microsoft.Extensions.Logging;
+using GameSwap.Functions.Storage;
+
+namespace GameSwap.Functions.Functions;
 
 public class ImportFields
 {
-    private readonly ILogger _logger;
-    private readonly TableServiceClient _tableServiceClient;
+    private readonly ILogger _log;
+    private readonly TableServiceClient _svc;
 
     private const string FieldsTableName = "GameSwapFields";
 
-    public ImportFields(ILoggerFactory loggerFactory, TableServiceClient tableServiceClient)
+    public ImportFields(ILoggerFactory lf, TableServiceClient tableServiceClient)
     {
-        _logger = loggerFactory.CreateLogger<ImportFields>();
-        _tableServiceClient = tableServiceClient;
+        _log = lf.CreateLogger<ImportFields>();
+        _svc = tableServiceClient;
     }
 
     [Function("ImportFields")]
@@ -25,62 +27,92 @@ public class ImportFields
     {
         try
         {
-            var csvText = await ReadBodyAsStringAsync(req);
+            var leagueId = ApiGuards.RequireLeagueId(req);
+            var me = IdentityUtil.GetMe(req);
+            await ApiGuards.RequireMemberAsync(_svc, me.UserId, leagueId);
+
+            var csvText = await HttpUtil.ReadBodyAsStringAsync(req);
             if (string.IsNullOrWhiteSpace(csvText))
-                return Json(req, HttpStatusCode.BadRequest, new { error = "Empty CSV body." });
+                return HttpUtil.Json(req, HttpStatusCode.BadRequest, new { error = "Empty CSV body." });
 
             var rows = CsvMini.Parse(csvText);
-            if (rows.Count == 0)
-                return Json(req, HttpStatusCode.BadRequest, new { error = "No CSV rows found." });
+            if (rows.Count < 2)
+                return HttpUtil.Json(req, HttpStatusCode.BadRequest, new { error = "No CSV rows found." });
 
             var header = rows[0];
-            var headerIndex = CsvMini.HeaderIndex(header);
+            var idx = CsvMini.HeaderIndex(header);
 
-            // Required: FieldId, FieldName
-            if (!headerIndex.ContainsKey("fieldid") || !headerIndex.ContainsKey("fieldname"))
+            // Required canonical columns:
+            // ParkName, FieldName
+            if (!idx.ContainsKey("parkname") || !idx.ContainsKey("fieldname"))
             {
-                return Json(req, HttpStatusCode.BadRequest, new
+                return HttpUtil.Json(req, HttpStatusCode.BadRequest, new
                 {
-                    error = "Missing required columns. Required: FieldId, FieldName. Optional: Address, Location, Notes"
+                    error = "Missing required columns. Required: ParkName, FieldName. Optional: DisplayName, Address, Notes, IsActive"
                 });
             }
 
-            var table = _tableServiceClient.GetTableClient(FieldsTableName);
+            var table = _svc.GetTableClient(FieldsTableName);
             await table.CreateIfNotExistsAsync();
 
-            var upserted = 0;
-            var errors = new List<object>();
+            int upserted = 0;
+            int rejected = 0;
+            int skipped = 0;
 
-            // One partition key makes batching easy
-            const string pk = "Fields";
+            var errors = new List<object>();
             var actions = new List<TableTransactionAction>();
 
             for (int i = 1; i < rows.Count; i++)
             {
                 var r = rows[i];
-                if (CsvMini.IsBlankRow(r)) continue;
+                if (CsvMini.IsBlankRow(r)) { skipped++; continue; }
 
-                string fieldId = CsvMini.Get(r, headerIndex, "fieldid").Trim();
-                string fieldName = CsvMini.Get(r, headerIndex, "fieldname").Trim();
-                string address = CsvMini.Get(r, headerIndex, "address").Trim();
-                string location = CsvMini.Get(r, headerIndex, "location").Trim();
-                string notes = CsvMini.Get(r, headerIndex, "notes").Trim();
+                var parkName = CsvMini.Get(r, idx, "parkname").Trim();
+                var fieldName = CsvMini.Get(r, idx, "fieldname").Trim();
+                var displayName = CsvMini.Get(r, idx, "displayname").Trim();
+                var address = CsvMini.Get(r, idx, "address").Trim();
+                var notes = CsvMini.Get(r, idx, "notes").Trim();
+                var isActiveRaw = CsvMini.Get(r, idx, "isactive").Trim();
 
-                if (string.IsNullOrWhiteSpace(fieldId) || string.IsNullOrWhiteSpace(fieldName))
+                if (string.IsNullOrWhiteSpace(parkName) || string.IsNullOrWhiteSpace(fieldName))
                 {
-                    errors.Add(new { row = i + 1, error = "FieldId and FieldName are required." });
+                    rejected++;
+                    errors.Add(new { row = i + 1, error = "ParkName and FieldName are required." });
                     continue;
                 }
 
-                var rk = SafeKey(fieldId);
+                var parkCode = Slug.Make(parkName);
+                var fieldCode = Slug.Make(fieldName);
+
+                if (string.IsNullOrWhiteSpace(parkCode) || string.IsNullOrWhiteSpace(fieldCode))
+                {
+                    rejected++;
+                    errors.Add(new { row = i + 1, error = "Invalid ParkName/FieldName; slug became empty." });
+                    continue;
+                }
+
+                if (string.IsNullOrWhiteSpace(displayName))
+                    displayName = $"{parkName} > {fieldName}";
+
+                bool isActive = string.IsNullOrWhiteSpace(isActiveRaw)
+                    ? true
+                    : (bool.TryParse(isActiveRaw, out var b) ? b : true);
+
+                var pk = $"FIELD#{leagueId}#{parkCode}";
+                var rk = fieldCode;
 
                 var entity = new TableEntity(pk, rk)
                 {
-                    ["FieldId"] = fieldId,
+                    ["LeagueId"] = leagueId,
+                    ["ParkCode"] = parkCode,
+                    ["FieldCode"] = fieldCode,
+                    ["ParkName"] = parkName,
                     ["FieldName"] = fieldName,
+                    ["DisplayName"] = displayName,
                     ["Address"] = address,
-                    ["Location"] = location,
-                    ["Notes"] = notes
+                    ["Notes"] = notes,
+                    ["IsActive"] = isActive,
+                    ["UpdatedUtc"] = DateTimeOffset.UtcNow
                 };
 
                 actions.Add(new TableTransactionAction(TableTransactionActionType.UpsertMerge, entity));
@@ -99,41 +131,28 @@ public class ImportFields
                 upserted += result.Value.Count;
             }
 
-            return Json(req, HttpStatusCode.OK, new
+            return HttpUtil.Json(req, HttpStatusCode.OK, new
             {
                 table = FieldsTableName,
+                leagueId,
                 upserted,
+                rejected,
+                skipped,
                 errors
             });
         }
+        catch (InvalidOperationException inv)
+        {
+            return HttpUtil.Json(req, HttpStatusCode.BadRequest, new { error = inv.Message });
+        }
+        catch (UnauthorizedAccessException)
+        {
+            return HttpUtil.Text(req, HttpStatusCode.Forbidden, "Forbidden");
+        }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "ImportFields failed");
-            return Json(req, HttpStatusCode.InternalServerError, new { error = "Internal Server Error" });
+            _log.LogError(ex, "ImportFields failed");
+            return HttpUtil.Json(req, HttpStatusCode.InternalServerError, new { error = "Internal Server Error" });
         }
-    }
-
-    private static async Task<string> ReadBodyAsStringAsync(HttpRequestData req)
-    {
-        using var reader = new StreamReader(req.Body, Encoding.UTF8);
-        return await reader.ReadToEndAsync();
-    }
-
-    private static HttpResponseData Json(HttpRequestData req, HttpStatusCode status, object obj)
-    {
-        var resp = req.CreateResponse(status);
-        resp.Headers.Add("Content-Type", "application/json");
-        resp.WriteString(JsonSerializer.Serialize(obj));
-        return resp;
-    }
-
-    // Table keys cannot contain: / \ # ?
-    private static string SafeKey(string input)
-    {
-        var bad = new HashSet<char>(new[] { '/', '\\', '#', '?' });
-        var sb = new StringBuilder(input.Length);
-        foreach (var c in input)
-            sb.Append(bad.Contains(c) ? '_' : c);
-        return sb.ToString();
     }
 }

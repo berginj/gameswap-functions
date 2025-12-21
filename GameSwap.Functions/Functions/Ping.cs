@@ -1,14 +1,13 @@
+using System.Net;
 using Microsoft.Azure.Functions.Worker;
 using Microsoft.Azure.Functions.Worker.Http;
-using System.Net;
+using GameSwap.Functions.Storage;
+
+namespace GameSwap.Functions.Functions;
 
 public class Ping
 {
     [Function("Ping")]
     public HttpResponseData Run([HttpTrigger(AuthorizationLevel.Anonymous, "get", Route = "ping")] HttpRequestData req)
-    {
-        var res = req.CreateResponse(HttpStatusCode.OK);
-        res.WriteString("pong");
-        return res;
-    }
+        => HttpUtil.Text(req, HttpStatusCode.OK, "pong");
 }

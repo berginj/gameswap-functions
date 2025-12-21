@@ -1,24 +1,27 @@
 using System.Net;
 using System.Text;
-using System.Text.Json;
 using Azure;
 using Azure.Data.Tables;
 using Microsoft.Azure.Functions.Worker;
 using Microsoft.Azure.Functions.Worker.Http;
 using Microsoft.Extensions.Logging;
+using GameSwap.Functions.Storage;
+using System.Linq;
+
+namespace GameSwap.Functions.Functions;
 
 public class ImportSlots
 {
-    private readonly ILogger _logger;
-    private readonly TableServiceClient _tableServiceClient;
+    private readonly ILogger _log;
+    private readonly TableServiceClient _svc;
 
     private const string SlotsTableName = "GameSwapSlots";
     private const string FieldsTableName = "GameSwapFields";
 
-    public ImportSlots(ILoggerFactory loggerFactory, TableServiceClient tableServiceClient)
+    public ImportSlots(ILoggerFactory lf, TableServiceClient tableServiceClient)
     {
-        _logger = loggerFactory.CreateLogger<ImportSlots>();
-        _tableServiceClient = tableServiceClient;
+        _log = lf.CreateLogger<ImportSlots>();
+        _svc = tableServiceClient;
     }
 
     [Function("ImportSlots")]
@@ -27,172 +30,248 @@ public class ImportSlots
     {
         try
         {
-            var csvText = await ReadBodyAsStringAsync(req);
+            var leagueId = ApiGuards.RequireLeagueId(req);
+            var me = IdentityUtil.GetMe(req);
+            await ApiGuards.RequireMemberAsync(_svc, me.UserId, leagueId);
+
+            var csvText = await HttpUtil.ReadBodyAsStringAsync(req);
             if (string.IsNullOrWhiteSpace(csvText))
-                return Json(req, HttpStatusCode.BadRequest, new { error = "Empty CSV body." });
+                return HttpUtil.Json(req, HttpStatusCode.BadRequest, new { error = "Empty CSV body." });
 
             var rows = CsvMini.Parse(csvText);
-            if (rows.Count == 0)
-                return Json(req, HttpStatusCode.BadRequest, new { error = "No CSV rows found." });
+            if (rows.Count < 2)
+                return HttpUtil.Json(req, HttpStatusCode.BadRequest, new { error = "No CSV rows found." });
 
             var header = rows[0];
-            var headerIndex = CsvMini.HeaderIndex(header);
+            var idx = CsvMini.HeaderIndex(header);
 
-            // Required columns
-            var required = new[] { "division", "offeringteamid", "gamedate", "starttime", "endtime", "fieldid" };
-            var missing = required.Where(c => !headerIndex.ContainsKey(c)).ToList();
+            // Required normalized columns
+            var required = new[]
+            {
+                "division",
+                "offeringteamid",
+                "gamedate",
+                "starttime",
+                "endtime",
+                "parkname",
+                "fieldname"
+            };
+
+            var missing = required.Where(c => !idx.ContainsKey(c)).ToList();
             if (missing.Count > 0)
             {
-                return Json(req, HttpStatusCode.BadRequest, new
+                return HttpUtil.Json(req, HttpStatusCode.BadRequest, new
                 {
                     error = "Missing required columns.",
-                    required = required,
-                    missing
+                    required,
+                    missing,
+                    optional = new[] { "offeringemail", "gametype", "notes", "status" }
                 });
             }
 
-            var slotsTable = _tableServiceClient.GetTableClient(SlotsTableName);
-            var fieldsTable = _tableServiceClient.GetTableClient(FieldsTableName);
+            var slotsTable = _svc.GetTableClient(SlotsTableName);
             await slotsTable.CreateIfNotExistsAsync();
+
+            var fieldsTable = _svc.GetTableClient(FieldsTableName);
             await fieldsTable.CreateIfNotExistsAsync();
 
-            // Build FieldId -> FieldName map (optional but helps UI)
-            var fieldNameById = await LoadFieldMapAsync(fieldsTable);
+            var fieldLookup = await LoadFieldsLookupAsync(fieldsTable, leagueId);
 
-            // We'll group by PartitionKey (Division) so we can batch per division
-            var byDivision = new Dictionary<string, List<TableEntity>>(StringComparer.OrdinalIgnoreCase);
+            // PartitionKey batching (Azure Tables transactions are limited to 100 ops and must share the PK)
+            var byPk = new Dictionary<string, List<TableTransactionAction>>(StringComparer.OrdinalIgnoreCase);
 
+            int upserted = 0, rejected = 0, skipped = 0;
             var errors = new List<object>();
-            var upserted = 0;
 
             for (int i = 1; i < rows.Count; i++)
             {
                 var r = rows[i];
-                if (CsvMini.IsBlankRow(r)) continue;
+                if (CsvMini.IsBlankRow(r)) { skipped++; continue; }
 
-                string division = CsvMini.Get(r, headerIndex, "division").Trim();
-                string offeringTeamId = CsvMini.Get(r, headerIndex, "offeringteamid").Trim();
-                string gameDate = CsvMini.Get(r, headerIndex, "gamedate").Trim();     // YYYY-MM-DD
-                string startTime = CsvMini.Get(r, headerIndex, "starttime").Trim();   // HH:mm
-                string endTime = CsvMini.Get(r, headerIndex, "endtime").Trim();       // HH:mm
-                string fieldId = CsvMini.Get(r, headerIndex, "fieldid").Trim();
+                var division = CsvMini.Get(r, idx, "division").Trim();
+                var offeringTeamId = CsvMini.Get(r, idx, "offeringteamid").Trim();
+                var offeringEmail = CsvMini.Get(r, idx, "offeringemail").Trim();
 
-                string gameType = CsvMini.Get(r, headerIndex, "gametype").Trim();
-                string notes = CsvMini.Get(r, headerIndex, "notes").Trim();
-                string status = CsvMini.Get(r, headerIndex, "status").Trim();
+                var gameDate = CsvMini.Get(r, idx, "gamedate").Trim();
+                var startTime = CsvMini.Get(r, idx, "starttime").Trim();
+                var endTime = CsvMini.Get(r, idx, "endtime").Trim();
+
+                var parkName = CsvMini.Get(r, idx, "parkname").Trim();
+                var fieldName = CsvMini.Get(r, idx, "fieldname").Trim();
+
+                var gameType = CsvMini.Get(r, idx, "gametype").Trim();
+                var notes = CsvMini.Get(r, idx, "notes").Trim();
+                var status = CsvMini.Get(r, idx, "status").Trim();
 
                 if (string.IsNullOrWhiteSpace(division) ||
                     string.IsNullOrWhiteSpace(offeringTeamId) ||
                     string.IsNullOrWhiteSpace(gameDate) ||
                     string.IsNullOrWhiteSpace(startTime) ||
                     string.IsNullOrWhiteSpace(endTime) ||
-                    string.IsNullOrWhiteSpace(fieldId))
+                    string.IsNullOrWhiteSpace(parkName) ||
+                    string.IsNullOrWhiteSpace(fieldName))
                 {
-                    errors.Add(new { row = i + 1, error = "Division, OfferingTeamId, GameDate, StartTime, EndTime, FieldId are required." });
+                    rejected++;
+                    errors.Add(new { row = i + 1, error = "Division, OfferingTeamId, GameDate, StartTime, EndTime, ParkName, FieldName are required." });
                     continue;
                 }
 
                 if (string.IsNullOrWhiteSpace(gameType)) gameType = "Swap";
                 if (string.IsNullOrWhiteSpace(status)) status = "Open";
 
-                // Deterministic SlotId so re-import doesn’t duplicate:
-                // RowKey (SlotId) = "{OfferingTeamId}|{GameDate}|{StartTime}|{EndTime}|{FieldId}"
-                var slotId = SafeKey($"{offeringTeamId}|{gameDate}|{startTime}|{endTime}|{fieldId}");
+                var parkCode = Slug.Make(parkName);
+                var fieldCode = Slug.Make(fieldName);
 
-                var fieldName = fieldNameById.TryGetValue(fieldId, out var name)
-                    ? name
-                    : fieldId; // fallback
-
-                var entity = new TableEntity(division, slotId)
+                if (string.IsNullOrWhiteSpace(parkCode) || string.IsNullOrWhiteSpace(fieldCode))
                 {
+                    rejected++;
+                    errors.Add(new { row = i + 1, error = "Invalid ParkName/FieldName; slug became empty." });
+                    continue;
+                }
+
+                var fieldKey = $"{parkCode}|{fieldCode}";
+                if (!fieldLookup.TryGetValue(fieldKey, out var fieldMeta))
+                {
+                    rejected++;
+                    errors.Add(new { row = i + 1, error = "Field not found in GameSwapFields (import fields first).", parkName, fieldName });
+                    continue;
+                }
+
+                if (!fieldMeta.IsActive)
+                {
+                    rejected++;
+                    errors.Add(new { row = i + 1, error = "Field exists but IsActive=false.", parkName, fieldName });
+                    continue;
+                }
+
+                var pk = $"SLOT#{leagueId}#{division}";
+                var slotId = SafeKey($"{offeringTeamId}|{gameDate}|{startTime}|{endTime}|{parkCode}|{fieldCode}");
+                var now = DateTimeOffset.UtcNow;
+
+                var entity = new TableEntity(pk, slotId)
+                {
+                    ["LeagueId"] = leagueId,
                     ["SlotId"] = slotId,
                     ["Division"] = division,
+
                     ["OfferingTeamId"] = offeringTeamId,
+                    ["OfferingEmail"] = offeringEmail,
+
                     ["GameDate"] = gameDate,
                     ["StartTime"] = startTime,
                     ["EndTime"] = endTime,
-                    ["FieldId"] = fieldId,
-                    ["Field"] = fieldName,
+
+                    ["ParkName"] = fieldMeta.ParkName,
+                    ["FieldName"] = fieldMeta.FieldName,
+                    ["DisplayName"] = fieldMeta.DisplayName,
+                    ["FieldKey"] = $"{parkCode}/{fieldCode}",
+
                     ["GameType"] = gameType,
                     ["Status"] = status,
-                    ["Notes"] = notes
+                    ["Notes"] = notes,
+
+                    ["UpdatedUtc"] = now,
+                    ["LastUpdatedUtc"] = now
                 };
 
-                if (!byDivision.TryGetValue(division, out var list))
+                if (!byPk.TryGetValue(pk, out var actions))
                 {
-                    list = new List<TableEntity>();
-                    byDivision[division] = list;
+                    actions = new List<TableTransactionAction>();
+                    byPk[pk] = actions;
                 }
 
-                list.Add(entity);
+                actions.Add(new TableTransactionAction(TableTransactionActionType.UpsertMerge, entity));
             }
 
-            // Batch upsert by division (PartitionKey)
-            foreach (var kvp in byDivision)
+            foreach (var (pk, actions) in byPk)
             {
-                var division = kvp.Key;
-                var entities = kvp.Value;
-
-                for (int idx = 0; idx < entities.Count; idx += 100)
+                for (int idx2 = 0; idx2 < actions.Count; idx2 += 100)
                 {
-                    var chunk = entities.Skip(idx).Take(100);
-                    var actions = chunk.Select(e => new TableTransactionAction(TableTransactionActionType.UpsertMerge, e)).ToList();
-                    var result = await slotsTable.SubmitTransactionAsync(actions);
-                    upserted += result.Value.Count;
+                    var chunk = actions.Skip(idx2).Take(100).ToList();
+                    try
+                    {
+                        var result = await slotsTable.SubmitTransactionAsync(chunk);
+                        upserted += result.Value.Count;
+                    }
+                    catch (RequestFailedException ex)
+                    {
+                        _log.LogError(ex, "ImportSlots transaction failed for PK {pk}", pk);
+                        errors.Add(new { partitionKey = pk, error = ex.Message });
+                    }
                 }
             }
 
-            return Json(req, HttpStatusCode.OK, new
+            return HttpUtil.Json(req, HttpStatusCode.OK, new
             {
                 table = SlotsTableName,
+                leagueId,
                 upserted,
+                rejected,
+                skipped,
                 errors
             });
         }
+        catch (InvalidOperationException inv)
+        {
+            return HttpUtil.Json(req, HttpStatusCode.BadRequest, new { error = inv.Message });
+        }
+        catch (UnauthorizedAccessException)
+        {
+            return HttpUtil.Text(req, HttpStatusCode.Forbidden, "Forbidden");
+        }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "ImportSlots failed");
-            return Json(req, HttpStatusCode.InternalServerError, new { error = "Internal Server Error" });
+            _log.LogError(ex, "ImportSlots failed");
+            return HttpUtil.Json(req, HttpStatusCode.InternalServerError, new { error = "Internal Server Error" });
         }
     }
 
-    private static async Task<Dictionary<string, string>> LoadFieldMapAsync(TableClient fieldsTable)
-    {
-        var map = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+    private sealed record FieldMeta(string ParkName, string FieldName, string DisplayName, bool IsActive);
 
-        // PartitionKey = "Fields"
-        await foreach (var e in fieldsTable.QueryAsync<TableEntity>(filter: "PartitionKey eq 'Fields'"))
+    private static async Task<Dictionary<string, FieldMeta>> LoadFieldsLookupAsync(TableClient fieldsTable, string leagueId)
+    {
+        var map = new Dictionary<string, FieldMeta>(StringComparer.OrdinalIgnoreCase);
+
+        // PK = FIELD#{leagueId}#{parkCode}
+        var pkPrefix = $"FIELD#{leagueId}#";
+        var next = pkPrefix + "\uffff";
+        var filter = $"PartitionKey ge '{ApiGuards.EscapeOData(pkPrefix)}' and PartitionKey lt '{ApiGuards.EscapeOData(next)}'";
+
+        await foreach (var e in fieldsTable.QueryAsync<TableEntity>(filter: filter))
         {
-            var fieldId = e.GetString("FieldId") ?? e.RowKey;
-            var fieldName = e.GetString("FieldName") ?? fieldId;
-            if (!string.IsNullOrWhiteSpace(fieldId))
-                map[fieldId] = fieldName;
+            var isActive = e.GetBoolean("IsActive") ?? true;
+
+            var parkName = e.GetString("ParkName") ?? "";
+            var fieldName = e.GetString("FieldName") ?? "";
+            var displayName = e.GetString("DisplayName") ?? "";
+
+            var parkCode = e.GetString("ParkCode") ?? ExtractParkCodeFromPk(e.PartitionKey, leagueId);
+            var fieldCode = e.GetString("FieldCode") ?? e.RowKey;
+
+            if (string.IsNullOrWhiteSpace(displayName) && !string.IsNullOrWhiteSpace(parkName) && !string.IsNullOrWhiteSpace(fieldName))
+                displayName = $"{parkName} > {fieldName}";
+
+            if (string.IsNullOrWhiteSpace(parkCode) || string.IsNullOrWhiteSpace(fieldCode))
+                continue;
+
+            map[$"{parkCode}|{fieldCode}"] = new FieldMeta(parkName, fieldName, displayName, isActive);
         }
 
         return map;
     }
 
-    private static async Task<string> ReadBodyAsStringAsync(HttpRequestData req)
+    private static string ExtractParkCodeFromPk(string pk, string leagueId)
     {
-        using var reader = new StreamReader(req.Body, Encoding.UTF8);
-        return await reader.ReadToEndAsync();
+        var prefix = $"FIELD#{leagueId}#";
+        if (!pk.StartsWith(prefix, StringComparison.OrdinalIgnoreCase)) return "";
+        return pk[prefix.Length..];
     }
 
-    private static HttpResponseData Json(HttpRequestData req, HttpStatusCode status, object obj)
-    {
-        var resp = req.CreateResponse(status);
-        resp.Headers.Add("Content-Type", "application/json");
-        resp.WriteString(JsonSerializer.Serialize(obj));
-        return resp;
-    }
-
-    // Table keys cannot contain: / \ # ?
     private static string SafeKey(string input)
     {
         var bad = new HashSet<char>(new[] { '/', '\\', '#', '?' });
         var sb = new StringBuilder(input.Length);
-        foreach (var c in input)
-            sb.Append(bad.Contains(c) ? '_' : c);
+        foreach (var c in input) sb.Append(bad.Contains(c) ? '_' : c);
         return sb.ToString();
     }
 }

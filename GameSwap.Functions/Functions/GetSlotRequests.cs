@@ -1,22 +1,26 @@
 using System.Net;
-using System.Text.Json;
 using Azure;
 using Azure.Data.Tables;
 using Microsoft.Azure.Functions.Worker;
 using Microsoft.Azure.Functions.Worker.Http;
 using Microsoft.Extensions.Logging;
+using GameSwap.Functions.Storage;
+using System.Linq;
+
+namespace GameSwap.Functions.Functions;
 
 public class GetSlotRequests
 {
-    private readonly ILogger _logger;
-    private readonly TableServiceClient _tableServiceClient;
+    private readonly ILogger _log;
+    private readonly TableServiceClient _svc;
 
     private const string RequestsTableName = "GameSwapSlotRequests";
+    private const string SlotsTableName = "GameSwapSlots";
 
-    public GetSlotRequests(ILoggerFactory loggerFactory, TableServiceClient tableServiceClient)
+    public GetSlotRequests(ILoggerFactory lf, TableServiceClient tableServiceClient)
     {
-        _logger = loggerFactory.CreateLogger<GetSlotRequests>();
-        _tableServiceClient = tableServiceClient;
+        _log = lf.CreateLogger<GetSlotRequests>();
+        _svc = tableServiceClient;
     }
 
     [Function("GetSlotRequests")]
@@ -27,52 +31,56 @@ public class GetSlotRequests
     {
         try
         {
-            var requestsTable = _tableServiceClient.GetTableClient(RequestsTableName);
-            await requestsTable.CreateIfNotExistsAsync();
+            var leagueId = ApiGuards.RequireLeagueId(req);
+            var me = IdentityUtil.GetMe(req);
+            await ApiGuards.RequireMemberAsync(_svc, me.UserId, leagueId);
 
-            var pk = $"{division}|{slotId}";
-            var filter = $"PartitionKey eq '{EscapeOData(pk)}'";
-
-            var items = new List<object>();
-
-            await foreach (var e in requestsTable.QueryAsync<TableEntity>(filter: filter))
+            // Validate slot exists (cheap guardrail)
+            var slots = _svc.GetTableClient(SlotsTableName);
+            await slots.CreateIfNotExistsAsync();
+            var slotPk = $"SLOT#{leagueId}#{division}";
+            try { _ = (await slots.GetEntityAsync<TableEntity>(slotPk, slotId)).Value; }
+            catch (RequestFailedException ex) when (ex.Status == 404)
             {
-                items.Add(new
+                return HttpUtil.Json(req, HttpStatusCode.NotFound, new { error = "Slot not found" });
+            }
+
+            var table = _svc.GetTableClient(RequestsTableName);
+            await table.CreateIfNotExistsAsync();
+
+            var pk = $"SLOTREQ#{leagueId}#{division}#{slotId}";
+            var filter = $"PartitionKey eq '{ApiGuards.EscapeOData(pk)}'";
+
+            var list = new List<object>();
+            await foreach (var e in table.QueryAsync<TableEntity>(filter: filter))
+            {
+                list.Add(new
                 {
-                    RequestId = e.RowKey,
-                    Division = e.GetString("Division") ?? division,
-                    SlotId = e.GetString("SlotId") ?? slotId,
-                    RequestingTeamId = e.GetString("RequestingTeamId") ?? "",
-                    RequestingEmail = e.GetString("RequestingEmail") ?? "",
-                    Message = e.GetString("Message") ?? "",
-                    Status = e.GetString("Status") ?? "",
-                    RequestedAtUtc = e.GetDateTimeOffset("RequestedAtUtc")?.ToString("o") ?? ""
+                    requestId = e.RowKey,
+                    requestingTeamId = e.GetString("RequestingTeamId") ?? "",
+                    requestingEmail = e.GetString("RequestingEmail") ?? "",
+                    message = e.GetString("Message") ?? "",
+                    status = e.GetString("Status") ?? "Pending",
+                    requestedUtc = e.GetDateTimeOffset("RequestedUtc")
                 });
             }
 
-            // Sort newest-first for UI convenience
-            items = items
-                .OrderByDescending(x =>
-                {
-                    var prop = x.GetType().GetProperty("RequestedAtUtc")?.GetValue(x)?.ToString();
-                    return DateTimeOffset.TryParse(prop, out var dt) ? dt : DateTimeOffset.MinValue;
-                })
-                .Cast<object>()
-                .ToList();
-
-            var resp = req.CreateResponse(HttpStatusCode.OK);
-            resp.Headers.Add("Content-Type", "application/json");
-            await resp.WriteStringAsync(JsonSerializer.Serialize(items));
-            return resp;
+            var res = req.CreateResponse(HttpStatusCode.OK);
+            await res.WriteAsJsonAsync(list.OrderByDescending(x => ((dynamic)x).requestedUtc ?? DateTimeOffset.MinValue));
+            return res;
+        }
+        catch (InvalidOperationException inv)
+        {
+            return HttpUtil.Json(req, HttpStatusCode.BadRequest, new { error = inv.Message });
+        }
+        catch (UnauthorizedAccessException)
+        {
+            return HttpUtil.Text(req, HttpStatusCode.Forbidden, "Forbidden");
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "GetSlotRequests failed");
-            var resp = req.CreateResponse(HttpStatusCode.InternalServerError);
-            await resp.WriteStringAsync("Internal Server Error");
-            return resp;
+            _log.LogError(ex, "GetSlotRequests failed");
+            return HttpUtil.Text(req, HttpStatusCode.InternalServerError, "Internal Server Error");
         }
     }
-
-    private static string EscapeOData(string s) => s.Replace("'", "''");
 }
