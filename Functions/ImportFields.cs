@@ -1,6 +1,4 @@
 using System.Net;
-using System.Text;
-using System.Text.RegularExpressions;
 using System.Linq;
 using Azure.Data.Tables;
 using Microsoft.Azure.Functions.Worker;
@@ -32,7 +30,7 @@ public class ImportFields
 
             await ApiGuards.RequireLeagueAdminAsync(_svc, me.UserId, leagueId);
 
-            var csvText = await ReadCsvTextAsync(req);
+            var csvText = await CsvUpload.ReadCsvTextAsync(req);
             if (string.IsNullOrWhiteSpace(csvText))
                 return ApiResponses.Error(req, HttpStatusCode.BadRequest, "BAD_REQUEST", "Empty CSV body.");
 
