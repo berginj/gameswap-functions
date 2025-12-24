@@ -32,7 +32,7 @@ public class ImportSlots
         {
             var leagueId = ApiGuards.RequireLeagueId(req);
             var me = IdentityUtil.GetMe(req);
-            await ApiGuards.RequireMemberAsync(_svc, me.UserId, leagueId);
+            await ApiGuards.RequireLeagueAdminAsync(_svc, me.UserId, leagueId);
 
             var csvText = await CsvUpload.ReadCsvTextAsync(req);
             if (string.IsNullOrWhiteSpace(csvText))
@@ -53,8 +53,7 @@ public class ImportSlots
                 "gamedate",
                 "starttime",
                 "endtime",
-                "parkname",
-                "fieldname"
+                "fieldkey"
             };
 
             var missing = required.Where(c => !idx.ContainsKey(c)).ToList();
@@ -92,8 +91,7 @@ public class ImportSlots
                 var startTime = CsvMini.Get(r, idx, "starttime").Trim();
                 var endTime = CsvMini.Get(r, idx, "endtime").Trim();
 
-                var parkName = CsvMini.Get(r, idx, "parkname").Trim();
-                var fieldName = CsvMini.Get(r, idx, "fieldname").Trim();
+                var fieldKeyRaw = CsvMini.Get(r, idx, "fieldkey").Trim();
 
                 var gameType = CsvMini.Get(r, idx, "gametype").Trim();
                 var notes = CsvMini.Get(r, idx, "notes").Trim();
@@ -104,24 +102,20 @@ public class ImportSlots
                     string.IsNullOrWhiteSpace(gameDate) ||
                     string.IsNullOrWhiteSpace(startTime) ||
                     string.IsNullOrWhiteSpace(endTime) ||
-                    string.IsNullOrWhiteSpace(parkName) ||
-                    string.IsNullOrWhiteSpace(fieldName))
+                    string.IsNullOrWhiteSpace(fieldKeyRaw))
                 {
                     rejected++;
-                    errors.Add(new { row = i + 1, error = "Division, OfferingTeamId, GameDate, StartTime, EndTime, ParkName, FieldName are required." });
+                    errors.Add(new { row = i + 1, error = "Division, OfferingTeamId, GameDate, StartTime, EndTime, FieldKey are required." });
                     continue;
                 }
 
                 if (string.IsNullOrWhiteSpace(gameType)) gameType = "Swap";
                 if (string.IsNullOrWhiteSpace(status)) status = "Open";
 
-                var parkCode = Slug.Make(parkName);
-                var fieldCode = Slug.Make(fieldName);
-
-                if (string.IsNullOrWhiteSpace(parkCode) || string.IsNullOrWhiteSpace(fieldCode))
+                if (!TryParseFieldKey(fieldKeyRaw, out var parkCode, out var fieldCode))
                 {
                     rejected++;
-                    errors.Add(new { row = i + 1, error = "Invalid ParkName/FieldName; slug became empty." });
+                    errors.Add(new { row = i + 1, error = "Invalid FieldKey. Use parkCode/fieldCode." });
                     continue;
                 }
 
@@ -129,14 +123,14 @@ public class ImportSlots
                 if (!fieldLookup.TryGetValue(fieldKey, out var fieldMeta))
                 {
                     rejected++;
-                    errors.Add(new { row = i + 1, error = "Field not found in GameSwapFields (import fields first).", parkName, fieldName });
+                    errors.Add(new { row = i + 1, error = "Field not found in GameSwapFields (import fields first).", fieldKey = fieldKeyRaw });
                     continue;
                 }
 
                 if (!fieldMeta.IsActive)
                 {
                     rejected++;
-                    errors.Add(new { row = i + 1, error = "Field exists but IsActive=false.", parkName, fieldName });
+                    errors.Add(new { row = i + 1, error = "Field exists but IsActive=false.", fieldKey = fieldKeyRaw });
                     continue;
                 }
 
@@ -269,5 +263,18 @@ public class ImportSlots
         var sb = new StringBuilder(input.Length);
         foreach (var c in input) sb.Append(bad.Contains(c) ? '_' : c);
         return sb.ToString();
+    }
+
+    private static bool TryParseFieldKey(string raw, out string parkCode, out string fieldCode)
+    {
+        parkCode = "";
+        fieldCode = "";
+        var v = (raw ?? "").Trim().Trim('/');
+        var parts = v.Split('/', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        if (parts.Length != 2) return false;
+
+        parkCode = Slug.Make(parts[0]);
+        fieldCode = Slug.Make(parts[1]);
+        return !string.IsNullOrWhiteSpace(parkCode) && !string.IsNullOrWhiteSpace(fieldCode);
     }
 }
