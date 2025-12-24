@@ -1,13 +1,12 @@
-using Azure.Data.Tables;
-using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 
 var host = new HostBuilder()
     .ConfigureFunctionsWorkerDefaults()
-    .ConfigureServices(services =>
+    .ConfigureServices((context, services) =>
     {
-        var storageConn = Environment.GetEnvironmentVariable("AzureWebJobsStorage");
-        services.AddSingleton(new TableServiceClient(storageConn));
+        var tableServiceClient = GameSwap.Functions.Storage.TableClients.CreateServiceClient(context.Configuration);
+        services.AddSingleton(tableServiceClient);
+        services.AddHostedService<GameSwap.Functions.Storage.TableStartup>();
     })
     .Build();
 
