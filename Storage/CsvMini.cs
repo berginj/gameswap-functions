@@ -87,10 +87,9 @@ public static class CsvMini
 
         for (int i = 0; i < header.Length; i++)
         {
-            var key = (header[i] ?? "").Trim();
+            var key = NormalizeHeaderKey(header[i]);
             if (string.IsNullOrWhiteSpace(key)) continue;
 
-            key = key.ToLowerInvariant();
             if (!map.ContainsKey(key))
                 map[key] = i;
         }
@@ -106,7 +105,8 @@ public static class CsvMini
         if (headerIndex == null) return "";
         if (string.IsNullOrWhiteSpace(headerKeyLower)) return "";
 
-        if (!headerIndex.TryGetValue(headerKeyLower.ToLowerInvariant(), out var idx)) return "";
+        var normalized = NormalizeHeaderKey(headerKeyLower);
+        if (!headerIndex.TryGetValue(normalized, out var idx)) return "";
         if (idx < 0 || idx >= row.Length) return "";
 
         return row[idx] ?? "";
@@ -120,5 +120,12 @@ public static class CsvMini
             if (!string.IsNullOrWhiteSpace(c)) return false;
         }
         return true;
+    }
+
+    private static string NormalizeHeaderKey(string? key)
+    {
+        if (string.IsNullOrWhiteSpace(key)) return "";
+        var trimmed = key.Trim().ToLowerInvariant();
+        return trimmed.Replace(" ", "").Replace("_", "").Replace("-", "");
     }
 }
