@@ -66,3 +66,66 @@ Response
     ]
   }
 }
+```
+
+---
+
+## 2) Function call reference (authoritative)
+
+This section is the **artifact for automated reviewers** (including Codex) to understand how every HTTP-triggered
+function is called. Keep it current any time a route, method, or authorization requirement changes. The table below
+is intentionally minimal: it defines how to call each function and where to find the implementation.
+
+**For Codex reviewers:** treat this section as the canonical API call index. Read the table for routes/methods and
+the notes for required headers or roles.
+
+### Maintenance rules
+- Every HttpTrigger must appear in the table below with its HTTP method(s) and route.
+- If an endpoint becomes league-scoped, call out the `x-league-id` requirement in its notes.
+- When refactoring or adding functions, update this table and the matching UI repo copy.
+
+### Endpoint index
+
+| Method | Route | File | Notes |
+| --- | --- | --- | --- |
+| GET | /ping | `Functions/Ping.cs` | Health check. |
+| GET | /me | `Functions/GetMe.cs` | Authenticated identity and memberships. |
+| GET | /leagues | `Functions/LeaguesFunctions.cs` | List leagues for current user. |
+| GET | /league | `Functions/LeaguesFunctions.cs` | Get current league details (requires `x-league-id`). |
+| PATCH | /league | `Functions/LeaguesFunctions.cs` | Update current league (requires `x-league-id`, LeagueAdmin). |
+| GET | /admin/leagues | `Functions/LeaguesFunctions.cs` | Global admin list of leagues. |
+| POST | /admin/leagues | `Functions/LeaguesFunctions.cs` | Global admin create league. |
+| GET | /admin/globaladmins | `Functions/GlobalAdminsFunctions.cs` | Global admin list. |
+| POST | /admin/globaladmins | `Functions/GlobalAdminsFunctions.cs` | Add global admin. |
+| DELETE | /admin/globaladmins/{userId} | `Functions/GlobalAdminsFunctions.cs` | Remove global admin. |
+| POST | /accessrequests | `Functions/AccessRequestsFunctions.cs` | Create access request. |
+| GET | /accessrequests/mine | `Functions/AccessRequestsFunctions.cs` | Current user's access requests. |
+| GET | /accessrequests | `Functions/AccessRequestsFunctions.cs` | League access requests (requires `x-league-id`, LeagueAdmin). |
+| PATCH | /accessrequests/{userId}/approve | `Functions/AccessRequestsFunctions.cs` | Approve access request (requires `x-league-id`, LeagueAdmin). |
+| PATCH | /accessrequests/{userId}/deny | `Functions/AccessRequestsFunctions.cs` | Deny access request (requires `x-league-id`, LeagueAdmin). |
+| POST | /admin/invites | `Functions/LeagueInvitesFunctions.cs` | Create invite (requires `x-league-id`, LeagueAdmin). |
+| POST | /invites/accept | `Functions/LeagueInvitesFunctions.cs` | Accept invite. |
+| GET | /memberships | `Functions/MembershipsFunctions.cs` | List memberships (requires `x-league-id`, LeagueAdmin). |
+| PATCH | /memberships/{userId} | `Functions/MembershipsFunctions.cs` | Update membership (requires `x-league-id`, LeagueAdmin). |
+| GET | /divisions | `Functions/DivisionsFunctions.cs` | List divisions (requires `x-league-id`). |
+| POST | /divisions | `Functions/DivisionsFunctions.cs` | Create division (requires `x-league-id`, LeagueAdmin). |
+| PATCH | /divisions/{code} | `Functions/DivisionsFunctions.cs` | Update division (requires `x-league-id`, LeagueAdmin). |
+| GET | /divisions/templates | `Functions/DivisionsFunctions.cs` | List division templates (requires `x-league-id`). |
+| PATCH | /divisions/templates | `Functions/DivisionsFunctions.cs` | Update division templates (requires `x-league-id`, LeagueAdmin). |
+| GET | /teams | `Functions/TeamsFunctions.cs` | List teams (requires `x-league-id`). |
+| POST | /teams | `Functions/TeamsFunctions.cs` | Create team (requires `x-league-id`, LeagueAdmin). |
+| PATCH | /teams/{division}/{teamId} | `Functions/TeamsFunctions.cs` | Update team (requires `x-league-id`, LeagueAdmin). |
+| DELETE | /teams/{division}/{teamId} | `Functions/TeamsFunctions.cs` | Delete team (requires `x-league-id`, LeagueAdmin). |
+| GET | /fields | `Functions/FieldsFunctions.cs` | List fields (requires `x-league-id`). |
+| POST | /import/fields | `Functions/ImportFields.cs` | CSV field import (requires `x-league-id`, LeagueAdmin). |
+| POST | /import/slots | `Functions/ImportSlots.cs` | CSV slot import (requires `x-league-id`, LeagueAdmin). |
+| GET | /slots | `Functions/GetSlots.cs` | List slots (requires `x-league-id`). |
+| POST | /slots | `Functions/CreateSlot.cs` | Create slot (requires `x-league-id`, LeagueAdmin). |
+| PATCH | /slots/{division}/{slotId}/cancel | `Functions/CancelSlot.cs` | Cancel slot (requires `x-league-id`, LeagueAdmin). |
+| GET | /slots/{division}/{slotId}/requests | `Functions/GetSlotRequests.cs` | List requests for slot (requires `x-league-id`). |
+| POST | /slots/{division}/{slotId}/requests | `Functions/CreateSlotRequest.cs` | Request slot (requires `x-league-id`, Coach). |
+| PATCH | /slots/{division}/{slotId}/requests/{requestId}/approve | `Functions/ApproveSlotRequest.cs` | Approve slot request (requires `x-league-id`, Coach). |
+| GET | /events | `Functions/GetEvents.cs` | List events (requires `x-league-id`). |
+| POST | /events | `Functions/CreateEvent.cs` | Create event (requires `x-league-id`, LeagueAdmin). |
+| PATCH | /events/{eventId} | `Functions/PatchEvent.cs` | Update event (requires `x-league-id`, LeagueAdmin). |
+| DELETE | /events/{eventId} | `Functions/DeleteEvent.cs` | Delete event (requires `x-league-id`, LeagueAdmin). |
