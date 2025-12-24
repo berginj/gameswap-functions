@@ -160,11 +160,12 @@ public class ImportFields
         if (looksMultipart)
         {
             var bytes = await MultipartFormData.ReadFirstFileBytesAsync(bodyBytes, ct, preferName: "file");
-            return StripBom(Encoding.UTF8.GetString(bytes ?? Array.Empty<byte>()));
+            var csv = Encoding.UTF8.GetString(bytes ?? Array.Empty<byte>());
+            return NormalizeNewlines(StripBom(csv));
         }
 
         // Raw CSV text
-        return StripBom(Encoding.UTF8.GetString(bodyBytes));
+        return NormalizeNewlines(StripBom(Encoding.UTF8.GetString(bodyBytes)));
     }
 
     private static bool BodyLooksMultipart(byte[] body)
@@ -178,6 +179,9 @@ public class ImportFields
         => req.Headers.TryGetValues(name, out var vals) ? (vals.FirstOrDefault() ?? "") : "";
 
     private static string StripBom(string s) => (s ?? "").TrimStart('\uFEFF');
+
+    private static string NormalizeNewlines(string s)
+        => (s ?? "").Replace("\r\n", "\n").Replace("\r", "\n");
 
     private static bool TryParseFieldKeyFlexible(string raw, string parkName, string fieldName,
         out string parkCode, out string fieldCode, out string normalizedFieldKey)
@@ -337,8 +341,8 @@ public class ImportFields
             foreach (var line in lines)
             {
                 if (!line.StartsWith("Content-Disposition:", StringComparison.OrdinalIgnoreCase)) continue;
-                var name = Regex.Match(line, @"name=""(?<n>[^""]+)""", RegexOptions.IgnoreCase);
-                var fn = Regex.Match(line, @"filename=""(?<f>[^""]+)""", RegexOptions.IgnoreCase);
+                var name = Regex.Match(line, @"name=(?:""(?<n>[^""]+)""|(?<n>[^;]+))", RegexOptions.IgnoreCase);
+                var fn = Regex.Match(line, @"filename=(?:""(?<f>[^""]+)""|(?<f>[^;]+))", RegexOptions.IgnoreCase);
                 return (name.Success ? name.Groups["n"].Value : null, fn.Success ? fn.Groups["f"].Value : null);
             }
             return null;
