@@ -212,7 +212,12 @@ public class ImportSlots
         catch (Exception ex)
         {
             _log.LogError(ex, "ImportSlots failed");
-            return HttpUtil.Json(req, HttpStatusCode.InternalServerError, new { error = "Internal Server Error" });
+            return ApiResponses.Error(
+                req,
+                HttpStatusCode.InternalServerError,
+                "INTERNAL",
+                "Internal Server Error",
+                new { exception = ex.GetType().Name, message = ex.Message });
         }
     }
 
