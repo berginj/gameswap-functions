@@ -222,14 +222,13 @@ public class ImportSlots
         }
         catch (Exception ex)
         {
-            var requestId = req.FunctionContext.InvocationId.ToString();
-            _log.LogError(ex, "ImportSlots failed. requestId={requestId}", requestId);
+            _log.LogError(ex, "ImportSlots failed");
             return ApiResponses.Error(
                 req,
                 HttpStatusCode.InternalServerError,
                 "INTERNAL",
                 "Internal Server Error",
-                new { requestId });
+                new { exception = ex.GetType().Name, message = ex.Message });
         }
     }
 
