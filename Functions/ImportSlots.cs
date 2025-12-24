@@ -34,7 +34,7 @@ public class ImportSlots
             var me = IdentityUtil.GetMe(req);
             await ApiGuards.RequireMemberAsync(_svc, me.UserId, leagueId);
 
-            var csvText = await HttpUtil.ReadBodyAsStringAsync(req);
+            var csvText = await CsvUpload.ReadCsvTextAsync(req);
             if (string.IsNullOrWhiteSpace(csvText))
                 return HttpUtil.Json(req, HttpStatusCode.BadRequest, new { error = "Empty CSV body." });
 
