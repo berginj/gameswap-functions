@@ -76,6 +76,9 @@ This section is the **artifact for automated reviewers** (including Codex) to un
 function is called. Keep it current any time a route, method, or authorization requirement changes. The table below
 is intentionally minimal: it defines how to call each function and where to find the implementation.
 
+**For Codex reviewers:** treat this section as the canonical API call index. Read the table for routes/methods and
+the notes for required headers or roles.
+
 ### Maintenance rules
 - Every HttpTrigger must appear in the table below with its HTTP method(s) and route.
 - If an endpoint becomes league-scoped, call out the `x-league-id` requirement in its notes.
