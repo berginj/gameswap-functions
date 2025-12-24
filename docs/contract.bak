@@ -1,0 +1,435 @@
+# GameSwap API Contract
+
+This document is the single source of truth for UI↔API integration. It must be kept identical in both repos:
+- UI repo: /docs/contract.md
+- API repo: /docs/contract.md
+
+## Cross-cutting rules
+
+### Auth
+- All calls assume the user is authenticated via Azure Static Web Apps EasyAuth.
+- The API may return 401 when the user is not signed in.
+
+### League scoping (non-negotiable)
+- Every league-scoped endpoint requires header: x-league-id: <leagueId>
+- Backend validates header presence and authorization (membership or global admin where specified).
+- UI persists the selected league id and attaches it on every league-scoped request.
+
+### Roles (locked)
+League role strings:
+- LeagueAdmin: can manage league setup (fields, divisions/templates, teams), update league contact, and perform all scheduler actions. Second only to global admin.
+- Coach: can be approved before a team is assigned. A LeagueAdmin can assign (or change) the coach's team later. Coaches can offer slots, request swaps, and approve/deny slot requests. Some actions (like requesting a swap) may require a team assignment.
+- Viewer: read-only. Can view available games/slots and upcoming schedule views. Cannot offer, request, approve, or manage setup.
+
+Global admin:
+- isGlobalAdmin is returned by /me. Global admins can create leagues and can perform any league-scoped admin action.
+
+### Standard response envelope (non-negotiable)
+All endpoints return JSON with one of:
+- Success: { "data": ... }
+- Failure: { "error": { "code": string, "message": string, "details"?: any } }
+
+### Error codes (recommended)
+- BAD_REQUEST (400)
+- UNAUTHENTICATED (401)
+- FORBIDDEN (403)
+- NOT_FOUND (404)
+- CONFLICT (409)
+- INTERNAL (500)
+
+---
+
+## 1) Onboarding
+
+### GET /me
+Returns identity and memberships.
+
+Response
+```json
+{
+  "data": {
+    "userId": "<string>",
+    "email": "<string>",
+    "isGlobalAdmin": false,
+    "memberships": [
+      { "leagueId": "ARL", "role": "LeagueAdmin" },
+      { "leagueId": "ARL", "role": "Coach" },
+      { "leagueId": "ARL", "role": "Coach", "team": { "division": "10U", "teamId": "TIGERS" } },
+      { "leagueId": "XYZ", "role": "Viewer" }
+    ]
+  }
+}
+```
+
+---
+
+## 2) Leagues
+
+### GET /leagues
+Public list of active leagues (used before membership).
+
+Response
+```json
+{ "data": [ { "leagueId": "ARL", "name": "Arlington", "timezone": "America/New_York", "status": "Active" } ] }
+```
+
+### GET /league (league-scoped)
+Header: x-league-id
+
+Response
+```json
+{ "data": { "leagueId": "ARL", "name": "Arlington", "timezone": "America/New_York", "status": "Active", "contact": { "name": "...", "email": "...", "phone": "..." } } }
+```
+
+### PATCH /league (league-scoped)
+Requires: LeagueAdmin or global admin.
+
+Body
+```json
+{ "name": "Arlington", "timezone": "America/New_York", "contact": { "name": "...", "email": "...", "phone": "..." }, "status": "Active" }
+```
+
+Response
+```json
+{ "data": { "leagueId": "ARL", "name": "Arlington", "timezone": "America/New_York", "status": "Active", "contact": { "name": "...", "email": "...", "phone": "..." } } }
+```
+
+### Admin: GET /admin/leagues
+Requires: global admin.
+
+### Admin: POST /admin/leagues
+Requires: global admin.
+
+Body
+```json
+{ "leagueId": "ARL", "name": "Arlington", "timezone": "America/New_York" }
+```
+
+---
+
+## 3) Access
+
+### POST /accessrequests (league-scoped)
+Header: x-league-id
+Creates an access request for the selected league. Callers may not be members yet.
+
+Body
+```json
+{ "requestedRole": "Coach", "notes": "I coach the Tigers" }
+```
+
+Response
+```json
+{ "data": { "leagueId": "ARL", "userId": "...", "email": "...", "requestedRole": "Coach", "status": "Pending", "notes": "..." } }
+```
+
+### GET /accessrequests/mine
+Returns the caller's access requests across leagues.
+
+Response
+```json
+{ "data": [ { "leagueId": "ARL", "requestedRole": "Coach", "status": "Pending", "notes": "..." } ] }
+```
+
+### Admin: GET /accessrequests (league-scoped)
+Header: x-league-id
+Requires: LeagueAdmin or global admin.
+Query: status (default Pending)
+
+### Admin: PATCH /accessrequests/{userId}/approve (league-scoped)
+Header: x-league-id
+Requires: LeagueAdmin or global admin.
+
+Body (optional overrides)
+```json
+{ "role": "Coach", "team": { "division": "10U", "teamId": "TIGERS" } }
+```
+
+Response
+```json
+{ "data": { "leagueId": "ARL", "userId": "...", "status": "Approved" } }
+```
+
+### Admin: PATCH /accessrequests/{userId}/deny (league-scoped)
+Header: x-league-id
+Requires: LeagueAdmin or global admin.
+
+Body
+```json
+{ "reason": "Not a coach" }
+```
+
+---
+
+## 3b) Memberships (admin)
+
+### Admin: GET /memberships (league-scoped)
+Header: x-league-id
+Requires: LeagueAdmin or global admin.
+
+Response
+```json
+{
+  "data": [
+    { "userId": "...", "email": "...", "role": "LeagueAdmin" },
+    { "userId": "...", "email": "...", "role": "Coach" },
+    { "userId": "...", "email": "...", "role": "Coach", "team": { "division": "10U", "teamId": "TIGERS" } },
+    { "userId": "...", "email": "...", "role": "Viewer" }
+  ]
+}
+```
+
+### Admin: PATCH /memberships/{userId} (league-scoped)
+Header: x-league-id
+Requires: LeagueAdmin or global admin.
+Assigns (or clears) a coach's team assignment. This does not change the user's role.
+
+Body
+```json
+{ "team": { "division": "10U", "teamId": "TIGERS" } }
+```
+
+Clear assignment
+```json
+{ "team": null }
+```
+
+Response
+```json
+{ "data": { "userId": "...", "role": "Coach", "team": { "division": "10U", "teamId": "TIGERS" } } }
+```
+
+Notes
+- Some coach actions (e.g., requesting a swap) require a team assignment. When missing, the API returns 400 with error code COACH_TEAM_REQUIRED.
+
+## 4) Divisions
+
+### GET /divisions (league-scoped)
+Header: x-league-id
+Requires: member (any role).
+
+### POST /divisions (league-scoped)
+Requires: LeagueAdmin or global admin.
+
+### PATCH /divisions/{code} (league-scoped)
+Requires: LeagueAdmin or global admin.
+
+### GET /divisions/templates (league-scoped)
+Returns the division template catalog for this league.
+
+### PATCH /divisions/templates (league-scoped)
+Requires: LeagueAdmin or global admin.
+Sets the league's division template catalog.
+
+---
+
+## 5) Fields
+
+### GET /fields (league-scoped)
+Requires: member (any role).
+
+### PATCH /fields (league-scoped)
+Requires: LeagueAdmin or global admin.
+Upserts fields.
+
+### POST /import/fields (league-scoped)
+Requires: LeagueAdmin or global admin.
+Uploads CSV to import fields.
+
+---
+
+## 6) Teams
+
+Teams are identified by league (header) + division + teamId.
+
+### GET /teams (league-scoped)
+Query: division (optional)
+Requires: member (any role).
+
+### POST /teams (league-scoped)
+Requires: LeagueAdmin or global admin.
+
+Body
+```json
+{ "division": "10U", "teamId": "TIGERS", "name": "Tigers", "primaryContact": { "name": "...", "email": "...", "phone": "..." } }
+```
+
+### PATCH /teams/{division}/{teamId} (league-scoped)
+Requires: LeagueAdmin or global admin.
+
+### DELETE /teams/{division}/{teamId} (league-scoped)
+Requires: LeagueAdmin or global admin.
+
+---
+
+## 7) Slots
+
+### GET /slots (league-scoped)
+Query (all optional): division, status, dateFrom (YYYY-MM-DD), dateTo (YYYY-MM-DD)
+Requires: member (Viewer allowed).
+
+### POST /slots (league-scoped)
+Requires: Coach or LeagueAdmin (not Viewer).
+
+Body
+```json
+{ "division": "10U", "offeringTeamId": "TIGERS", "gameDate": "2026-04-10", "startTime": "18:00", "endTime": "20:00", "parkName": "Gunston", "fieldName": "Turf", "notes": "Looking to swap" }
+```
+
+### POST /slots/{division}/{slotId}/requests (league-scoped)
+Requires: Coach or LeagueAdmin (not Viewer).
+
+### GET /slots/{division}/{slotId}/requests (league-scoped)
+Requires: member (Viewer allowed).
+
+### PATCH /slots/{division}/{slotId}/requests/{requestId}/approve (league-scoped)
+Requires: member role is not Viewer.
+
+### PATCH /slots/{division}/{slotId}/cancel (league-scoped)
+Requires: offering team OR LeagueAdmin OR global admin.
+
+---
+
+## 8) Events
+
+Events are calendar items that are not Slots (e.g., practices, tryouts, meetings, clinics, **open game requests**).
+They are league-scoped via x-league-id.
+
+Event types (string)
+- Practice
+- Meeting
+- Clinic
+- GameRequest
+- Other
+
+Event status (string)
+- Open
+- Accepted
+- Cancelled
+
+### GET /events (league-scoped)
+Query (all optional): division, dateFrom (YYYY-MM-DD), dateTo (YYYY-MM-DD)
+Requires: member (Viewer allowed).
+
+Notes
+- If division is provided, the API returns events tagged to that division plus league-wide events where division is empty.
+
+Response
+```json
+{
+  "data": [
+    {
+      "eventId": "evt_123",
+      "type": "GameRequest",
+      "status": "Open",
+      "division": "10U",
+      "teamId": "TIGERS",
+      "opponentTeamId": null,
+      "title": "Game Request",
+      "eventDate": "2026-04-05",
+      "startTime": "19:00",
+      "endTime": "20:00",
+      "location": "",
+      "notes": "Looking for a friendly",
+      "createdByUserId": "user_abc",
+      "acceptedByUserId": null,
+      "createdUtc": "2026-03-01T12:00:00Z",
+      "updatedUtc": "2026-03-01T12:00:00Z"
+    }
+  ]
+}
+```
+
+### POST /events (league-scoped)
+Requires: member role is not Viewer.
+
+Rules
+- LeagueAdmin (or global admin) may create any event type.
+- Coach may create events only to request games:
+  - API forces type=GameRequest
+  - API sets division/teamId from the coach's membership assignment
+  - If the coach has no team assignment, API returns 400 with error code COACH_TEAM_REQUIRED
+  - Game requests are **open**: opponentTeamId is not required.
+
+Body
+
+Required fields
+- eventDate (YYYY-MM-DD)
+- startTime (HH:MM)
+- endTime (HH:MM)
+
+```json
+{
+  "type": "GameRequest",
+  "division": "10U",
+  "teamId": "TIGERS",
+  "title": "Game Request",
+  "eventDate": "2026-04-05",
+  "startTime": "18:00",
+  "endTime": "19:30",
+  "location": "Gunston",
+  "notes": "Open request"
+}
+```
+
+Response
+```json
+{
+  "data": {
+    "eventId": "evt_123",
+    "type": "GameRequest",
+    "status": "Open",
+    "division": "10U",
+    "teamId": "TIGERS",
+    "opponentTeamId": null,
+    "title": "Game Request",
+    "eventDate": "2026-04-05",
+    "startTime": "18:00",
+    "endTime": "19:30",
+    "location": "Gunston",
+    "notes": "Open request",
+    "createdByUserId": "user_abc",
+    "acceptedByUserId": null,
+    "createdUtc": "2026-03-01T12:00:00Z",
+    "updatedUtc": "2026-03-01T12:00:00Z"
+  }
+}
+```
+
+### POST /events/{eventId}/accept (league-scoped)
+Requires: member role is not Viewer.
+
+Rules
+- Only Coaches (or LeagueAdmin/global admin acting as a coach is fine) can accept a GameRequest.
+- A coach must have a team assignment to accept.
+- Cannot accept your own request.
+- Accepting a request sets:
+  - status = Accepted
+  - opponentTeamId = accepting coach teamId
+  - acceptedByUserId = accepting userId
+
+Response
+```json
+{ "data": { "eventId": "evt_123", "status": "Accepted", "opponentTeamId": "EAGLES", "acceptedByUserId": "user_xyz" } }
+```
+
+### PATCH /events/{eventId} (league-scoped)
+Requires: LeagueAdmin or global admin, OR Coach who created the event.
+
+Rules
+- Coach may only patch their own events.
+- Coach may only patch type=GameRequest events.
+- Required fields (eventDate/startTime/endTime) cannot be cleared.
+
+Body (partial update)
+```json
+{ "title": "Updated title", "eventDate": "2026-04-06", "startTime": "18:30", "endTime": "19:30", "location": "New location", "notes": "..." }
+```
+
+### DELETE /events/{eventId} (league-scoped)
+Requires: LeagueAdmin or global admin, OR Coach who created the event.
+
+Response
+```json
+{ "data": { "deleted": true } }
+```
