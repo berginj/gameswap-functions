@@ -1,5 +1,7 @@
 using System.Net;
 using System.Linq;
+using System.Text;
+using System.Text.RegularExpressions;
 using Azure.Data.Tables;
 using Microsoft.Azure.Functions.Worker;
 using Microsoft.Azure.Functions.Worker.Http;
