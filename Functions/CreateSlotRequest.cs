@@ -201,9 +201,11 @@ public class CreateSlotRequest
             return ApiResponses.Ok(req, new
             {
                 requestId,
+                requestingTeamId = myTeamId,
                 status = Constants.Status.SlotRequestApproved,
                 slotStatus = Constants.Status.SlotConfirmed,
-                confirmedTeamId = myTeamId
+                confirmedTeamId = myTeamId,
+                requestedUtc = now
             }, HttpStatusCode.Created);
         }
         catch (ApiGuards.HttpError ex)

@@ -135,11 +135,11 @@ the notes for required headers or roles.
 | POST | /import/fields | `Functions/ImportFields.cs` | CSV field import (requires `x-league-id`, LeagueAdmin). |
 | POST | /import/slots | `Functions/ImportSlots.cs` | CSV slot import (requires `x-league-id`, LeagueAdmin). |
 | GET | /slots | `Functions/GetSlots.cs` | List slots (requires `x-league-id`). |
-| POST | /slots | `Functions/CreateSlot.cs` | Create slot (requires `x-league-id`, LeagueAdmin). |
+| POST | /slots | `Functions/CreateSlot.cs` | Create slot (requires `x-league-id`, Coach or LeagueAdmin). |
 | PATCH | /slots/{division}/{slotId}/cancel | `Functions/CancelSlot.cs` | Cancel slot (requires `x-league-id`, LeagueAdmin). |
 | GET | /slots/{division}/{slotId}/requests | `Functions/GetSlotRequests.cs` | List requests for slot (requires `x-league-id`). |
 | POST | /slots/{division}/{slotId}/requests | `Functions/CreateSlotRequest.cs` | Request slot (requires `x-league-id`, Coach). |
-| PATCH | /slots/{division}/{slotId}/requests/{requestId}/approve | `Functions/ApproveSlotRequest.cs` | Approve slot request (requires `x-league-id`, Coach). |
+| PATCH | /slots/{division}/{slotId}/requests/{requestId}/approve | `Functions/ApproveSlotRequest.cs` | Approve slot request (requires `x-league-id`, offering coach, LeagueAdmin, or global admin). |
 | GET | /events | `Functions/GetEvents.cs` | List events (requires `x-league-id`). |
 | POST | /events | `Functions/CreateEvent.cs` | Create event (requires `x-league-id`, LeagueAdmin). |
 | PATCH | /events/{eventId} | `Functions/PatchEvent.cs` | Update event (requires `x-league-id`, LeagueAdmin). |
@@ -472,10 +472,13 @@ Required columns:
 - `gameDate` (YYYY-MM-DD)
 - `startTime` (HH:MM)
 - `endTime` (HH:MM)
-- `fieldKey`
+- `fieldKey` (format `parkCode/fieldCode`)
 
 Optional columns:
 - `notes`
+- `offeringEmail`
+- `gameType`
+- `status`
 
 Import behavior:
 - Creates slots for the specified league and division.
@@ -529,7 +532,9 @@ Body
   "startTime": "18:00",
   "endTime": "20:00",
   "fieldKey": "gunston/turf",
-  "notes": "Open game offer"
+  "notes": "Open game offer",
+  "gameType": "Swap",
+  "offeringEmail": "coach@example.com"
 }
 ```
 
