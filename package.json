@@ -1,0 +1,18 @@
+{
+  "name": "gameswap-functions-root",
+  "private": true,
+  "workspaces": [
+    "fsa-www"
+  ],
+  "scripts": {
+    "dev:functions": "func start",
+    "dev:ui": "npm --workspace fsa-www run dev",
+    "dev": "concurrently \"npm run dev:functions\" \"npm run dev:ui\"",
+    "build:ui": "npm --workspace fsa-www run build",
+    "build:functions": "dotnet build",
+    "build": "npm run build:functions && npm run build:ui"
+  },
+  "devDependencies": {
+    "concurrently": "^9.2.1"
+  }
+}

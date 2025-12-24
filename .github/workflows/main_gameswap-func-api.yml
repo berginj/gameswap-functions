@@ -24,6 +24,25 @@ jobs:
       - name: 'Checkout GitHub Action'
         uses: actions/checkout@v4
 
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install UI dependencies
+        shell: pwsh
+        run: |
+          pushd './fsa-www'
+          npm ci
+          popd
+
+      - name: Build UI
+        shell: pwsh
+        run: |
+          pushd './fsa-www'
+          npm run build
+          popd
+
       - name: Setup DotNet ${{ env.DOTNET_VERSION }} Environment
         uses: actions/setup-dotnet@v1
         with:
@@ -35,6 +54,12 @@ jobs:
           pushd './${{ env.AZURE_FUNCTIONAPP_PACKAGE_PATH }}'
           dotnet build --configuration Release --output ./output
           popd
+
+      - name: Upload UI build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: fsa-www-dist
+          path: fsa-www/dist
       
       - name: Login to Azure
         uses: azure/login@v2
