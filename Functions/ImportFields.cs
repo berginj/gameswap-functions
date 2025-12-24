@@ -137,8 +137,14 @@ public class ImportFields
         catch (ApiGuards.HttpError ex) { return ApiResponses.FromHttpError(req, ex); }
         catch (Exception ex)
         {
-            _log.LogError(ex, "ImportFields failed");
-            return ApiResponses.Error(req, HttpStatusCode.InternalServerError, "INTERNAL", "Internal Server Error");
+            var requestId = req.FunctionContext.InvocationId.ToString();
+            _log.LogError(ex, "ImportFields failed. requestId={requestId}", requestId);
+            return ApiResponses.Error(
+                req,
+                HttpStatusCode.InternalServerError,
+                "INTERNAL",
+                "Internal Server Error",
+                new { requestId });
         }
     }
 
