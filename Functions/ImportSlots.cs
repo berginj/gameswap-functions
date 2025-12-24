@@ -209,10 +209,27 @@ public class ImportSlots
         {
             return HttpUtil.Text(req, HttpStatusCode.Forbidden, "Forbidden");
         }
+        catch (RequestFailedException ex)
+        {
+            var requestId = req.FunctionContext.InvocationId.ToString();
+            _log.LogError(ex, "ImportSlots storage request failed. requestId={requestId}", requestId);
+            return ApiResponses.Error(
+                req,
+                HttpStatusCode.BadGateway,
+                "STORAGE_ERROR",
+                "Storage request failed.",
+                new { requestId, status = ex.Status, code = ex.ErrorCode });
+        }
         catch (Exception ex)
         {
-            _log.LogError(ex, "ImportSlots failed");
-            return HttpUtil.Json(req, HttpStatusCode.InternalServerError, new { error = "Internal Server Error" });
+            var requestId = req.FunctionContext.InvocationId.ToString();
+            _log.LogError(ex, "ImportSlots failed. requestId={requestId}", requestId);
+            return ApiResponses.Error(
+                req,
+                HttpStatusCode.InternalServerError,
+                "INTERNAL",
+                "Internal Server Error",
+                new { requestId });
         }
     }
 

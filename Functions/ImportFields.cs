@@ -2,6 +2,7 @@ using System.Net;
 using System.Linq;
 using System.Text;
 using System.Text.RegularExpressions;
+using Azure;
 using Azure.Data.Tables;
 using Microsoft.Azure.Functions.Worker;
 using Microsoft.Azure.Functions.Worker.Http;
@@ -135,10 +136,27 @@ public class ImportFields
             return ApiResponses.Ok(req, new { leagueId, upserted, rejected, skipped, errors });
         }
         catch (ApiGuards.HttpError ex) { return ApiResponses.FromHttpError(req, ex); }
+        catch (RequestFailedException ex)
+        {
+            var requestId = req.FunctionContext.InvocationId.ToString();
+            _log.LogError(ex, "ImportFields storage request failed. requestId={requestId}", requestId);
+            return ApiResponses.Error(
+                req,
+                HttpStatusCode.BadGateway,
+                "STORAGE_ERROR",
+                "Storage request failed.",
+                new { requestId, status = ex.Status, code = ex.ErrorCode });
+        }
         catch (Exception ex)
         {
-            _log.LogError(ex, "ImportFields failed");
-            return ApiResponses.Error(req, HttpStatusCode.InternalServerError, "INTERNAL", "Internal Server Error");
+            var requestId = req.FunctionContext.InvocationId.ToString();
+            _log.LogError(ex, "ImportFields failed. requestId={requestId}", requestId);
+            return ApiResponses.Error(
+                req,
+                HttpStatusCode.InternalServerError,
+                "INTERNAL",
+                "Internal Server Error",
+                new { requestId });
         }
     }
 
