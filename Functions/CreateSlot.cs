@@ -51,15 +51,18 @@ public class CreateSlot
             var body = await HttpUtil.ReadJsonAsync<CreateSlotReq>(req);
             if (body is null) return ApiResponses.Error(req, HttpStatusCode.BadRequest, "BAD_REQUEST", "Invalid JSON body");
 
-            var division = (body.division ?? "").Trim();
-            var offeringTeamId = (body.offeringTeamId ?? "").Trim();
-            var offeringEmail = (body.offeringEmail ?? me.Email ?? "").Trim();
+            if (!CreateSlotValidation.TryValidate(body, me.Email ?? "", out var payload, out var validationError))
+                return ApiResponses.Error(req, HttpStatusCode.BadRequest, "BAD_REQUEST", validationError);
 
-            var gameDate = (body.gameDate ?? "").Trim();
-            var startTime = (body.startTime ?? "").Trim();
-            var endTime = (body.endTime ?? "").Trim();
+            var division = payload.Division;
+            var offeringTeamId = payload.OfferingTeamId;
+            var offeringEmail = payload.OfferingEmail;
 
-            var fieldKey = (body.fieldKey ?? "").Trim();
+            var gameDate = payload.GameDate;
+            var startTime = payload.StartTime;
+            var endTime = payload.EndTime;
+
+            var fieldKey = payload.FieldKeyRaw;
             var parkName = (body.parkName ?? "").Trim();   // optional (back-compat)
             var fieldName = (body.fieldName ?? "").Trim(); // optional (back-compat)
 
