@@ -2,13 +2,13 @@ using System.IdentityModel.Tokens.Jwt;
 using System.Net;
 using System.Security.Claims;
 using Microsoft.Azure.Functions.Worker;
-using Microsoft.Azure.Functions.Worker.Http;
 using Microsoft.Azure.Functions.Worker.Middleware;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
 using Microsoft.IdentityModel.Protocols;
 using Microsoft.IdentityModel.Protocols.OpenIdConnect;
 using Microsoft.IdentityModel.Tokens;
+using WorkerHttpRequestData = Microsoft.Azure.Functions.Worker.Http.HttpRequestData;
 
 namespace GameSwap.Functions.Auth;
 
@@ -75,11 +75,11 @@ public sealed class JwtValidationMiddleware : IFunctionsWorkerMiddleware
         }
     }
 
-    private static bool HasSwaPrincipal(HttpRequestData request)
+    private static bool HasSwaPrincipal(WorkerHttpRequestData request)
         => request.Headers.TryGetValues("x-ms-client-principal", out _)
             || request.Headers.TryGetValues("X-MS-CLIENT-PRINCIPAL", out _);
 
-    private static bool TryGetBearerToken(HttpRequestData request, out string token)
+    private static bool TryGetBearerToken(WorkerHttpRequestData request, out string token)
     {
         token = string.Empty;
         if (!request.Headers.TryGetValues("Authorization", out var values)) return false;
@@ -115,7 +115,7 @@ public sealed class JwtValidationMiddleware : IFunctionsWorkerMiddleware
         return parameters;
     }
 
-    private static void ApplyClaimsToHeaders(HttpRequestData request, IEnumerable<Claim> claims)
+    private static void ApplyClaimsToHeaders(WorkerHttpRequestData request, IEnumerable<Claim> claims)
     {
         var userId = claims.FirstOrDefault(c =>
                 string.Equals(c.Type, "oid", StringComparison.OrdinalIgnoreCase)
@@ -158,7 +158,7 @@ public sealed class JwtValidationMiddleware : IFunctionsWorkerMiddleware
         }
     }
 
-    private static async Task SetUnauthorizedAsync(FunctionContext context, HttpRequestData request, string message)
+    private static async Task SetUnauthorizedAsync(FunctionContext context, WorkerHttpRequestData request, string message)
     {
         var response = request.CreateResponse(HttpStatusCode.Unauthorized);
         await response.WriteStringAsync(message);
