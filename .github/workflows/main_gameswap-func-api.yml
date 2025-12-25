@@ -31,7 +31,7 @@ jobs:
 
       - name: Build UI
         run: |
-          npm ci --prefix fsa-www
+          npm --prefix fsa-www ci
           npm run --prefix fsa-www build
 
       - name: Setup DotNet ${{ env.DOTNET_VERSION }} Environment
