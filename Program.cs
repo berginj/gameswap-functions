@@ -12,6 +12,7 @@ var host = new HostBuilder()
         var tableServiceClient = GameSwap.Functions.Storage.TableClients.CreateServiceClient(context.Configuration);
         services.AddSingleton(tableServiceClient);
         services.AddHostedService<GameSwap.Functions.Storage.TableStartup>();
+        services.AddSingleton<INotificationService, NoOpNotificationService>();
     })
     .Build();
 

@@ -49,6 +49,30 @@ The API does **not** convert between time zones.
 
 ---
 
+## Notifications integration (internal)
+
+The API emits notification requests through a queue-style abstraction (`INotificationService`) so email/SMS
+providers can be plugged in without touching endpoint logic.
+
+### Notification payload shape
+See `Models/Notifications/NotificationRequest.cs` for the canonical payload. The request includes:
+- `EventType` (string): `EventCreated`, `OpponentAccepted`, or `ScheduleChanged`.
+- League, event/slot identifiers, optional team/opponent identifiers, and a `Metadata` dictionary for provider-specific details.
+
+### Emission points
+- Event created: `Functions/CreateEvent.cs` after the event is stored.
+- Opponent accepted: `Functions/ApproveSlotRequest.cs` after a slot request is approved and the slot is confirmed.
+- Schedule changed: `Functions/PatchEvent.cs` after a schedule update.
+
+### Provider integration notes
+Implement `INotificationService` in `Notifications/` to enqueue messages for:
+- SendGrid (email): build a template payload using `NotificationRequest.Metadata` fields such as title/date/time/location.
+- Twilio (SMS): map to concise text payloads and route to team/opponent contacts.
+- Azure Communication Services: same mapping as SendGrid/Twilio using ACS email/SMS APIs.
+
+The current default implementation (`NoOpNotificationService`) is a safe stub that does nothing. Replace it
+in DI (`Program.cs`) with your real implementation when ready.
+
 ## 1) Onboarding
 
 ### GET /me
