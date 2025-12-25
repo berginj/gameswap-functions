@@ -89,6 +89,7 @@ function App() {
     }
   }
 
+function App() {
   return (
     <>
       <div className="card">
