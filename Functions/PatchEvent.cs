@@ -1,6 +1,8 @@
 using System.Net;
 using Azure;
 using Azure.Data.Tables;
+using GameSwap.Functions.Models.Notifications;
+using GameSwap.Functions.Notifications;
 using GameSwap.Functions.Storage;
 using Microsoft.Azure.Functions.Worker;
 using Microsoft.Azure.Functions.Worker.Http;
@@ -12,13 +14,15 @@ public class PatchEvent
 {
     private readonly ILogger _log;
     private readonly TableServiceClient _svc;
+    private readonly INotificationService _notifications;
 
     private const string EventsTableName = Constants.Tables.Events;
 
-    public PatchEvent(ILoggerFactory lf, TableServiceClient tableServiceClient)
+    public PatchEvent(ILoggerFactory lf, TableServiceClient tableServiceClient, INotificationService notifications)
     {
         _log = lf.CreateLogger<PatchEvent>();
         _svc = tableServiceClient;
+        _notifications = notifications;
     }
 
     public record PatchEventReq(
@@ -30,6 +34,8 @@ public class PatchEvent
         string? startTime,
         string? endTime,
         string? location,
+        string? sport,
+        string? skill,
         string? notes
     );
 
@@ -60,6 +66,9 @@ public class PatchEvent
             if (body.endTime != null && string.IsNullOrWhiteSpace(body.endTime))
                 return ApiResponses.Error(req, HttpStatusCode.BadRequest, "BAD_REQUEST", "endTime is required");
 
+            if (body.eventDate != null && !ScheduleValidation.TryValidateDate(body.eventDate, "eventDate", out var dateErr))
+                return ApiResponses.Error(req, HttpStatusCode.BadRequest, "BAD_REQUEST", dateErr);
+
             var table = await TableClients.GetTableAsync(_svc, EventsTableName);
             var pk = Constants.Pk.Events(leagueId);
             TableEntity entity;
@@ -85,6 +94,8 @@ public class PatchEvent
             SetIfNotNull("StartTime", body.startTime);
             SetIfNotNull("EndTime", body.endTime);
             SetIfNotNull("Location", body.location);
+            SetIfNotNull("Sport", body.sport);
+            SetIfNotNull("Skill", body.skill);
             SetIfNotNull("Notes", body.notes);
 
             var finalEventDate = (entity.GetString("EventDate") ?? "").Trim();
@@ -93,9 +104,33 @@ public class PatchEvent
             if (string.IsNullOrWhiteSpace(finalEventDate) || string.IsNullOrWhiteSpace(finalStartTime) || string.IsNullOrWhiteSpace(finalEndTime))
                 return ApiResponses.Error(req, HttpStatusCode.BadRequest, "BAD_REQUEST", "eventDate, startTime, and endTime are required");
 
+            if (!ScheduleValidation.TryValidateDate(finalEventDate, "eventDate", out var finalDateErr))
+                return ApiResponses.Error(req, HttpStatusCode.BadRequest, "BAD_REQUEST", finalDateErr);
+            if (!ScheduleValidation.TryValidateTimeRange(finalStartTime, finalEndTime, out var timeErr))
+                return ApiResponses.Error(req, HttpStatusCode.BadRequest, "BAD_REQUEST", timeErr);
+
             entity["UpdatedUtc"] = DateTimeOffset.UtcNow;
 
             await table.UpdateEntityAsync(entity, entity.ETag, TableUpdateMode.Merge);
+
+            await _notifications.EnqueueAsync(new NotificationRequest(
+                NotificationEventTypes.ScheduleChanged,
+                leagueId,
+                eventId,
+                null,
+                null,
+                (entity.GetString("Division") ?? "").Trim(),
+                (entity.GetString("TeamId") ?? "").Trim(),
+                (entity.GetString("OpponentTeamId") ?? "").Trim(),
+                DateTimeOffset.UtcNow,
+                new Dictionary<string, string>
+                {
+                    ["Title"] = (entity.GetString("Title") ?? "").Trim(),
+                    ["EventDate"] = finalEventDate,
+                    ["StartTime"] = finalStartTime,
+                    ["EndTime"] = finalEndTime,
+                    ["Location"] = (entity.GetString("Location") ?? "").Trim()
+                }));
 
             return ApiResponses.Ok(req, new
             {
@@ -111,6 +146,8 @@ public class PatchEvent
                 startTime = (entity.GetString("StartTime") ?? "").Trim(),
                 endTime = (entity.GetString("EndTime") ?? "").Trim(),
                 location = (entity.GetString("Location") ?? "").Trim(),
+                sport = (entity.GetString("Sport") ?? "").Trim(),
+                skill = (entity.GetString("Skill") ?? "").Trim(),
                 notes = (entity.GetString("Notes") ?? "").Trim(),
                 createdByUserId = (entity.GetString("CreatedByUserId") ?? entity.GetString("CreatedBy") ?? "").Trim(),
                 createdUtc = entity.TryGetValue("CreatedUtc", out var cu2) ? (cu2?.ToString() ?? "") : "",

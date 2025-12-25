@@ -38,7 +38,7 @@ public class GlobalAdminsFunctions
         try
         {
             var me = IdentityUtil.GetMe(req);
-            await ApiGuards.RequireGlobalAdminAsync(_svc, me.UserId);
+            await ApiGuards.RequireGlobalAdminAsync(_svc, me);
 
             var table = await TableClients.GetTableAsync(_svc, TableName);
             var list = new List<GlobalAdminDto>();
@@ -67,7 +67,7 @@ public class GlobalAdminsFunctions
         try
         {
             var me = IdentityUtil.GetMe(req);
-            await ApiGuards.RequireGlobalAdminAsync(_svc, me.UserId);
+            await ApiGuards.RequireGlobalAdminAsync(_svc, me);
 
             UpsertReq? body;
             try { body = await req.ReadFromJsonAsync<UpsertReq>(); }
@@ -130,7 +130,7 @@ public class GlobalAdminsFunctions
         try
         {
             var me = IdentityUtil.GetMe(req);
-            await ApiGuards.RequireGlobalAdminAsync(_svc, me.UserId);
+            await ApiGuards.RequireGlobalAdminAsync(_svc, me);
 
             userId = (userId ?? "").Trim();
             if (string.IsNullOrWhiteSpace(userId))
