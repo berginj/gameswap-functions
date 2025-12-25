@@ -33,6 +33,8 @@ public class CreateSlot
         string? fieldName,
         string? offeringEmail,
         string? gameType,
+        string? sport,
+        string? skill,
         string? notes
     );
 
@@ -62,6 +64,8 @@ public class CreateSlot
             var fieldName = (body.fieldName ?? "").Trim(); // optional (back-compat)
 
             var gameType = string.IsNullOrWhiteSpace(body.gameType) ? "Swap" : body.gameType!.Trim();
+            var sport = (body.sport ?? "").Trim();
+            var skill = (body.skill ?? "").Trim();
             var notes = (body.notes ?? "").Trim();
 
             if (string.IsNullOrWhiteSpace(division) ||
@@ -76,10 +80,10 @@ public class CreateSlot
             }
 
             // Validate date/time formats (times are interpreted as US/Eastern per contract; stored as strings)
-            if (!DateOnly.TryParseExact(gameDate, "yyyy-MM-dd", out _))
-                return ApiResponses.Error(req, HttpStatusCode.BadRequest, "BAD_REQUEST", "gameDate must be YYYY-MM-DD.");
+            if (!ScheduleValidation.TryValidateDate(gameDate, "gameDate", out var dateErr))
+                return ApiResponses.Error(req, HttpStatusCode.BadRequest, "BAD_REQUEST", dateErr);
 
-            if (!TimeUtil.IsValidRange(startTime, endTime, out _, out _, out var timeErr))
+            if (!ScheduleValidation.TryValidateTimeRange(startTime, endTime, out var timeErr))
                 return ApiResponses.Error(req, HttpStatusCode.BadRequest, "BAD_REQUEST", timeErr);
 
             // Enforce Coach restrictions: coach can only create slots for their assigned team/division.
@@ -105,7 +109,7 @@ public class CreateSlot
 
             // Validate field exists + active.
             var fieldsTable = await TableClients.GetTableAsync(_svc, FieldsTableName);
-            if (!TryParseFieldKey(fieldKey, out var parkCode, out var fieldCode))
+            if (!ScheduleValidation.TryParseFieldKey(fieldKey, out var parkCode, out var fieldCode))
                 return ApiResponses.Error(req, HttpStatusCode.BadRequest, "BAD_REQUEST", "fieldKey must be parkCode/fieldCode.");
 
             var fieldPk = Constants.Pk.Fields(leagueId, parkCode);
@@ -151,6 +155,8 @@ public class CreateSlot
 
                 ["GameType"] = gameType,
                 ["Status"] = Constants.Status.SlotOpen,
+                ["Sport"] = sport,
+                ["Skill"] = skill,
                 ["Notes"] = notes,
 
                 ["CreatedUtc"] = now,
@@ -173,6 +179,8 @@ public class CreateSlot
                 fieldKey = entity.GetString("FieldKey") ?? "",
                 gameType,
                 status = (entity.GetString("Status") ?? Constants.Status.SlotOpen).Trim(),
+                sport,
+                skill,
                 notes
             }, HttpStatusCode.Created);
         }
@@ -184,16 +192,4 @@ public class CreateSlot
         }
     }
 
-    private static bool TryParseFieldKey(string raw, out string parkCode, out string fieldCode)
-    {
-        parkCode = "";
-        fieldCode = "";
-        var v = (raw ?? "").Trim().Trim('/');
-        var parts = v.Split('/', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
-        if (parts.Length != 2) return false;
-
-        parkCode = Slug.Make(parts[0]);
-        fieldCode = Slug.Make(parts[1]);
-        return !string.IsNullOrWhiteSpace(parkCode) && !string.IsNullOrWhiteSpace(fieldCode);
-    }
 }

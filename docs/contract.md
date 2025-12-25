@@ -136,12 +136,16 @@ the notes for required headers or roles.
 | POST | /import/slots | `Functions/ImportSlots.cs` | CSV slot import (requires `x-league-id`, LeagueAdmin). |
 | GET | /slots | `Functions/GetSlots.cs` | List slots (requires `x-league-id`). |
 | POST | /slots | `Functions/CreateSlot.cs` | Create slot (requires `x-league-id`, Coach or LeagueAdmin). |
-| PATCH | /slots/{division}/{slotId}/cancel | `Functions/CancelSlot.cs` | Cancel slot (requires `x-league-id`, LeagueAdmin). |
+| GET | /slots/{division}/{slotId} | `Functions/GetSlot.cs` | Get slot by id (requires `x-league-id`). |
+| PATCH | /slots/{division}/{slotId} | `Functions/PatchSlot.cs` | Update slot details (requires `x-league-id`, offering coach or LeagueAdmin). |
+| DELETE | /slots/{division}/{slotId} | `Functions/DeleteSlot.cs` | Delete slot (requires `x-league-id`, LeagueAdmin). |
+| PATCH | /slots/{division}/{slotId}/cancel | `Functions/CancelSlot.cs` | Cancel slot (requires `x-league-id`, offering/confirmed team, LeagueAdmin, or global admin). |
 | GET | /slots/{division}/{slotId}/requests | `Functions/GetSlotRequests.cs` | List requests for slot (requires `x-league-id`). |
 | POST | /slots/{division}/{slotId}/requests | `Functions/CreateSlotRequest.cs` | Request slot (requires `x-league-id`, Coach). |
 | PATCH | /slots/{division}/{slotId}/requests/{requestId}/approve | `Functions/ApproveSlotRequest.cs` | Approve slot request (requires `x-league-id`, offering coach, LeagueAdmin, or global admin). |
 | GET | /events | `Functions/GetEvents.cs` | List events (requires `x-league-id`). |
 | POST | /events | `Functions/CreateEvent.cs` | Create event (requires `x-league-id`, LeagueAdmin). |
+| GET | /events/{eventId} | `Functions/GetEvent.cs` | Get event by id (requires `x-league-id`). |
 | PATCH | /events/{eventId} | `Functions/PatchEvent.cs` | Update event (requires `x-league-id`, LeagueAdmin). |
 | DELETE | /events/{eventId} | `Functions/DeleteEvent.cs` | Delete event (requires `x-league-id`, LeagueAdmin). |
 
@@ -485,7 +489,7 @@ Import behavior:
 - `fieldKey` must match an imported field.
 
 ### GET /slots (league-scoped)
-Query (all optional): division, status, dateFrom (YYYY-MM-DD), dateTo (YYYY-MM-DD)  
+Query (all optional): division, status, dateFrom (YYYY-MM-DD), dateTo (YYYY-MM-DD), sport, skill, location  
 Requires: member (Viewer allowed).
 
 Visibility:
@@ -514,6 +518,8 @@ Response
       "fieldKey": "gunston/turf",
       "gameType": "Swap",
       "status": "Open",
+      "sport": "Baseball",
+      "skill": "Intermediate",
       "notes": "Open game offer"
     }
   ]
@@ -534,7 +540,9 @@ Body
   "fieldKey": "gunston/turf",
   "notes": "Open game offer",
   "gameType": "Swap",
-  "offeringEmail": "coach@example.com"
+  "offeringEmail": "coach@example.com",
+  "sport": "Baseball",
+  "skill": "Intermediate"
 }
 ```
 
@@ -545,6 +553,33 @@ Rules
 - `gameDate`, `startTime`, and `endTime` are interpreted as US/Eastern and must be valid (`HH:MM`, start < end).
 - `fieldKey` must reference an imported field (`parkCode/fieldCode`). The server normalizes `parkName`, `fieldName`, and `displayName` from that record.
 - LeagueAdmins (and global admins) may create slots for any team.
+
+### GET /slots/{division}/{slotId} (league-scoped)
+Requires: member (Viewer allowed).
+
+### PATCH /slots/{division}/{slotId} (league-scoped)
+Requires: offering coach OR LeagueAdmin or global admin.
+
+Body (optional fields, but `gameDate`, `startTime`, `endTime`, `fieldKey` cannot be blank if provided):
+```json
+{
+  "gameDate": "2026-04-10",
+  "startTime": "18:00",
+  "endTime": "20:00",
+  "fieldKey": "gunston/turf",
+  "notes": "Updated info",
+  "gameType": "Swap",
+  "sport": "Baseball",
+  "skill": "Intermediate"
+}
+```
+
+Rules
+- Only `Open` slots can be edited.
+- If caller role is `Coach`, the API enforces `offeringTeamId` and `division` must match the coach’s assigned team.
+
+### DELETE /slots/{division}/{slotId} (league-scoped)
+Requires: LeagueAdmin or global admin.
 
 
 ### POST /slots/{division}/{slotId}/requests (league-scoped)
@@ -618,7 +653,7 @@ Event status (string)
 - Cancelled
 
 ### GET /events (league-scoped)
-Query (all optional): division, dateFrom (YYYY-MM-DD), dateTo (YYYY-MM-DD)  
+Query (all optional): division, dateFrom (YYYY-MM-DD), dateTo (YYYY-MM-DD), sport, skill, location  
 Requires: member (Viewer allowed).
 
 ### POST /events (league-scoped)
@@ -635,9 +670,14 @@ Body (required fields: title, eventDate, startTime, endTime)
   "startTime": "18:00",
   "endTime": "19:30",
   "location": "Gunston",
+  "sport": "Baseball",
+  "skill": "Intermediate",
   "notes": "Bring water"
 }
 ```
+
+### GET /events/{eventId} (league-scoped)
+Requires: member (Viewer allowed).
 
 ### PATCH /events/{eventId} (league-scoped)
 Requires: LeagueAdmin or global admin.
