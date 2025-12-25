@@ -15,7 +15,7 @@ env:
 
 jobs:
   build-and-deploy:
-    runs-on: windows-latest
+    runs-on: ubuntu-latest
     permissions:
       id-token: write #This is required for requesting the JWT
       contents: read #This is required for actions/checkout
@@ -29,19 +29,10 @@ jobs:
         with:
           node-version: '20'
 
-      - name: Install UI dependencies
-        shell: pwsh
-        run: |
-          pushd './fsa-www'
-          npm ci
-          popd
-
       - name: Build UI
-        shell: pwsh
         run: |
-          pushd './fsa-www'
-          npm run build
-          popd
+          npm ci --prefix fsa-www
+          npm run --prefix fsa-www build
 
       - name: Setup DotNet ${{ env.DOTNET_VERSION }} Environment
         uses: actions/setup-dotnet@v1
@@ -49,17 +40,11 @@ jobs:
           dotnet-version: ${{ env.DOTNET_VERSION }}
 
       - name: 'Resolve Project Dependencies Using Dotnet'
-        shell: pwsh
+        shell: bash
         run: |
           pushd './${{ env.AZURE_FUNCTIONAPP_PACKAGE_PATH }}'
           dotnet build --configuration Release --output ./output
           popd
-
-      - name: Upload UI build artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: fsa-www-dist
-          path: fsa-www/dist
       
       - name: Login to Azure
         uses: azure/login@v2

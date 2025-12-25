@@ -32,7 +32,7 @@ public class LeagueInvitesFunctions
         try
         {
             var me = IdentityUtil.GetMe(req);
-            await ApiGuards.RequireGlobalAdminAsync(_svc, me.UserId);
+            await ApiGuards.RequireGlobalAdminAsync(_svc, me);
 
             var body = await HttpUtil.ReadJsonAsync<CreateInviteReq>(req);
             if (body is null) return HttpUtil.Json(req, HttpStatusCode.BadRequest, new { error = "Invalid JSON body" });

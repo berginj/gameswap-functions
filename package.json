@@ -1,18 +1,17 @@
 {
-  "name": "gameswap-functions-root",
+  "name": "gameswap-functions",
   "private": true,
   "workspaces": [
     "fsa-www"
   ],
   "scripts": {
+    "dev": "concurrently \"npm --prefix fsa-www run dev\" \"func start\"",
+    "dev:ui": "npm --prefix fsa-www run dev",
     "dev:functions": "func start",
-    "dev:ui": "npm --workspace fsa-www run dev",
-    "dev": "concurrently \"npm run dev:functions\" \"npm run dev:ui\"",
-    "build:ui": "npm --workspace fsa-www run build",
-    "build:functions": "dotnet build",
-    "build": "npm run build:functions && npm run build:ui"
+    "build": "npm --prefix fsa-www run build",
+    "lint:ui": "npm --prefix fsa-www run lint"
   },
   "devDependencies": {
-    "concurrently": "^9.2.1"
+    "concurrently": "^8.2.2"
   }
 }
