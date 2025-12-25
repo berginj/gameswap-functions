@@ -78,8 +78,8 @@ public static class IdentityUtil
         // 2) Fallback headers (useful for local/dev/testing)
         var userIdFallback = req.Headers.TryGetValues("x-user-id", out var ids) ? ids.FirstOrDefault() : null;
         var emailFallback = req.Headers.TryGetValues("x-user-email", out var emails) ? emails.FirstOrDefault() : null;
-        var rolesFallback = req.Headers.TryGetValues("x-user-roles", out var roles)
-            ? ParseRoles(roles.FirstOrDefault())
+        var rolesFallback = req.Headers.TryGetValues("x-user-roles", out var roleHeaders)
+            ? ParseRoles(roleHeaders.FirstOrDefault())
             : Array.Empty<string>();
 
         return new Me(userIdFallback ?? "UNKNOWN", emailFallback ?? "UNKNOWN", rolesFallback);
