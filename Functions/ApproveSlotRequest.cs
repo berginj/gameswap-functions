@@ -1,6 +1,8 @@
 using System.Net;
 using Azure;
 using Azure.Data.Tables;
+using GameSwap.Functions.Models.Notifications;
+using GameSwap.Functions.Notifications;
 using Microsoft.Azure.Functions.Worker;
 using Microsoft.Azure.Functions.Worker.Http;
 using Microsoft.Extensions.Logging;
@@ -12,14 +14,16 @@ public class ApproveSlotRequest
 {
     private readonly ILogger _log;
     private readonly TableServiceClient _svc;
+    private readonly INotificationService _notifications;
 
     private const string SlotsTableName = Constants.Tables.Slots;
     private const string RequestsTableName = Constants.Tables.SlotRequests;
 
-    public ApproveSlotRequest(ILoggerFactory lf, TableServiceClient tableServiceClient)
+    public ApproveSlotRequest(ILoggerFactory lf, TableServiceClient tableServiceClient, INotificationService notifications)
     {
         _log = lf.CreateLogger<ApproveSlotRequest>();
         _svc = tableServiceClient;
+        _notifications = notifications;
     }
 
     public record ApproveReq(string? approvedByEmail);
@@ -134,6 +138,21 @@ public class ApproveSlotRequest
             slot["UpdatedUtc"] = now;
 
             await slots.UpdateEntityAsync(slot, slot.ETag, TableUpdateMode.Replace);
+
+            await _notifications.EnqueueAsync(new NotificationRequest(
+                NotificationEventTypes.OpponentAccepted,
+                leagueId,
+                null,
+                slotId,
+                requestId,
+                division,
+                offeringTeamId,
+                request.GetString("RequestingTeamId") ?? "",
+                now,
+                new Dictionary<string, string>
+                {
+                    ["ApprovedBy"] = approvedBy
+                }));
 
             return ApiResponses.Ok(req, new { ok = true, slotId, division, requestId, status = Constants.Status.SlotConfirmed });
         }

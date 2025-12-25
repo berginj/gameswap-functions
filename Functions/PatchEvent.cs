@@ -1,6 +1,8 @@
 using System.Net;
 using Azure;
 using Azure.Data.Tables;
+using GameSwap.Functions.Models.Notifications;
+using GameSwap.Functions.Notifications;
 using GameSwap.Functions.Storage;
 using Microsoft.Azure.Functions.Worker;
 using Microsoft.Azure.Functions.Worker.Http;
@@ -12,13 +14,15 @@ public class PatchEvent
 {
     private readonly ILogger _log;
     private readonly TableServiceClient _svc;
+    private readonly INotificationService _notifications;
 
     private const string EventsTableName = Constants.Tables.Events;
 
-    public PatchEvent(ILoggerFactory lf, TableServiceClient tableServiceClient)
+    public PatchEvent(ILoggerFactory lf, TableServiceClient tableServiceClient, INotificationService notifications)
     {
         _log = lf.CreateLogger<PatchEvent>();
         _svc = tableServiceClient;
+        _notifications = notifications;
     }
 
     public record PatchEventReq(
@@ -108,6 +112,25 @@ public class PatchEvent
             entity["UpdatedUtc"] = DateTimeOffset.UtcNow;
 
             await table.UpdateEntityAsync(entity, entity.ETag, TableUpdateMode.Merge);
+
+            await _notifications.EnqueueAsync(new NotificationRequest(
+                NotificationEventTypes.ScheduleChanged,
+                leagueId,
+                eventId,
+                null,
+                null,
+                (entity.GetString("Division") ?? "").Trim(),
+                (entity.GetString("TeamId") ?? "").Trim(),
+                (entity.GetString("OpponentTeamId") ?? "").Trim(),
+                DateTimeOffset.UtcNow,
+                new Dictionary<string, string>
+                {
+                    ["Title"] = (entity.GetString("Title") ?? "").Trim(),
+                    ["EventDate"] = finalEventDate,
+                    ["StartTime"] = finalStartTime,
+                    ["EndTime"] = finalEndTime,
+                    ["Location"] = (entity.GetString("Location") ?? "").Trim()
+                }));
 
             return ApiResponses.Ok(req, new
             {

@@ -39,7 +39,99 @@ public class ImportFields
             if (rows.Count < 2)
                 return ApiResponses.Error(req, HttpStatusCode.BadRequest, "BAD_REQUEST", "No CSV rows found.");
 
-            return await ImportFromRowsAsync(req, leagueId, rows);
+            var header = rows[0];
+            if (header.Length > 0 && header[0] != null)
+                header[0] = header[0].TrimStart('\uFEFF'); // strip BOM
+
+            var idx = CsvMini.HeaderIndex(header);
+
+            if (!FieldImportValidation.HasRequiredColumns(idx))
+            {
+                // Helpful debug: show what the importer thought the header row was
+                var headerPreview = string.Join(",", header.Select(x => (x ?? "").Trim()).Take(12));
+                return ApiResponses.Error(req, HttpStatusCode.BadRequest, "BAD_REQUEST",
+                    "Missing required columns. Required: fieldKey, parkName, fieldName. Optional: displayName, address, notes, status (Active/Inactive).",
+                    new { headerPreview });
+            }
+
+            var table = await TableClients.GetTableAsync(_svc, Constants.Tables.Fields);
+
+            int upserted = 0, rejected = 0, skipped = 0;
+            var errors = new List<object>();
+            var actions = new List<TableTransactionAction>();
+
+            for (int i = 1; i < rows.Count; i++)
+            {
+                var r = rows[i];
+                if (CsvMini.IsBlankRow(r)) { skipped++; continue; }
+
+                var fieldKeyRaw = CsvMini.Get(r, idx, "fieldkey").Trim();
+                var parkName = CsvMini.Get(r, idx, "parkname").Trim();
+                var fieldName = CsvMini.Get(r, idx, "fieldname").Trim();
+
+                var displayName = CsvMini.Get(r, idx, "displayname").Trim();
+                var address = CsvMini.Get(r, idx, "address").Trim();
+                var notes = CsvMini.Get(r, idx, "notes").Trim();
+
+                var statusRaw = CsvMini.Get(r, idx, "status").Trim();
+                var isActiveRaw = CsvMini.Get(r, idx, "isactive").Trim();
+
+                if (string.IsNullOrWhiteSpace(fieldKeyRaw) || string.IsNullOrWhiteSpace(parkName) || string.IsNullOrWhiteSpace(fieldName))
+                {
+                    rejected++;
+                    errors.Add(new { row = i + 1, fieldKey = fieldKeyRaw, error = "fieldKey, parkName, fieldName are required." });
+                    continue;
+                }
+
+                if (!FieldImportValidation.TryParseFieldKeyFlexible(fieldKeyRaw, parkName, fieldName, out var parkCode, out var fieldCode, out var normalizedFieldKey))
+                {
+                    rejected++;
+                    errors.Add(new { row = i + 1, fieldKey = fieldKeyRaw, error = "Invalid fieldKey. Use parkCode/fieldCode or parkCode_fieldCode, or valid parkName/fieldName." });
+                    continue;
+                }
+
+                if (string.IsNullOrWhiteSpace(displayName))
+                    displayName = $"{parkName} > {fieldName}";
+
+                var isActive = FieldImportValidation.ParseIsActive(statusRaw, isActiveRaw);
+
+                var pk = Constants.Pk.Fields(leagueId, parkCode);
+                var rk = fieldCode;
+
+                notes = FieldImportValidation.AppendOptionalFieldNotes(notes, r, idx);
+
+                var entity = new TableEntity(pk, rk)
+                {
+                    ["LeagueId"] = leagueId,
+                    ["FieldKey"] = normalizedFieldKey,
+                    ["ParkCode"] = parkCode,
+                    ["FieldCode"] = fieldCode,
+                    ["ParkName"] = parkName,
+                    ["FieldName"] = fieldName,
+                    ["DisplayName"] = displayName,
+                    ["Address"] = address,
+                    ["Notes"] = notes,
+                    ["IsActive"] = isActive,
+                    ["UpdatedUtc"] = DateTimeOffset.UtcNow
+                };
+
+                actions.Add(new TableTransactionAction(TableTransactionActionType.UpsertMerge, entity));
+
+                if (actions.Count == 100)
+                {
+                    var result = await table.SubmitTransactionAsync(actions);
+                    upserted += result.Value.Count;
+                    actions.Clear();
+                }
+            }
+
+            if (actions.Count > 0)
+            {
+                var result = await table.SubmitTransactionAsync(actions);
+                upserted += result.Value.Count;
+            }
+
+            return ApiResponses.Ok(req, new { leagueId, upserted, rejected, skipped, errors });
         }
         catch (ApiGuards.HttpError ex) { return ApiResponses.FromHttpError(req, ex); }
         catch (RequestFailedException ex)
@@ -65,89 +157,48 @@ public class ImportFields
         }
     }
 
-    private static bool TryParseFieldKeyFlexible(string raw, string parkName, string fieldName,
-        out string parkCode, out string fieldCode, out string normalizedFieldKey)
+    private static async Task<string> ReadCsvTextAsync(HttpRequestData req)
     {
-        parkCode = ""; fieldCode = ""; normalizedFieldKey = "";
-        var v = (raw ?? "").Trim().Trim('/', '\\');
+        // Read body ONCE so we can sniff it even if Content-Type is wrong.
+        using var ms = new MemoryStream();
+        await req.Body.CopyToAsync(ms);
+        var bodyBytes = ms.ToArray();
+        if (bodyBytes.Length == 0) return "";
 
-        var slashParts = v.Split('/', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
-        if (slashParts.Length == 2)
+        var ct = GetHeader(req, "Content-Type");
+
+        // Detect multipart either by Content-Type OR by body signature
+        var looksMultipart =
+            (!string.IsNullOrWhiteSpace(ct) && ct.StartsWith("multipart/form-data", StringComparison.OrdinalIgnoreCase)) ||
+            BodyLooksMultipart(bodyBytes);
+
+        if (looksMultipart)
         {
-            parkCode = Slug.Make(slashParts[0]);
-            fieldCode = Slug.Make(slashParts[1]);
-            if (string.IsNullOrWhiteSpace(parkCode) || string.IsNullOrWhiteSpace(fieldCode)) return false;
-            normalizedFieldKey = $"{parkCode}/{fieldCode}";
-            return true;
+            var bytes = await MultipartFormData.ReadFirstFileBytesAsync(bodyBytes, ct, preferName: "file");
+            var csv = Encoding.UTF8.GetString(bytes ?? Array.Empty<byte>());
+            return NormalizeNewlines(StripBom(csv));
         }
 
-        var us = v.Split('_', 2, StringSplitOptions.TrimEntries);
-        if (us.Length == 2)
-        {
-            parkCode = Slug.Make(us[0]);
-            fieldCode = Slug.Make(us[1]);
-            if (!string.IsNullOrWhiteSpace(parkCode) && !string.IsNullOrWhiteSpace(fieldCode))
-            {
-                normalizedFieldKey = $"{parkCode}/{fieldCode}";
-                return true;
-            }
-        }
-
-        parkCode = Slug.Make(parkName);
-        fieldCode = Slug.Make(fieldName);
-        if (string.IsNullOrWhiteSpace(parkCode) || string.IsNullOrWhiteSpace(fieldCode)) return false;
-
-        normalizedFieldKey = $"{parkCode}/{fieldCode}";
-        return true;
+        // Raw CSV text
+        return NormalizeNewlines(StripBom(Encoding.UTF8.GetString(bodyBytes)));
     }
 
-    private static bool ParseIsActive(string statusRaw, string isActiveRaw)
+    private static bool BodyLooksMultipart(byte[] body)
     {
-        if (!string.IsNullOrWhiteSpace(statusRaw))
-        {
-            var s = statusRaw.Trim();
-            if (string.Equals(s, Constants.Status.FieldInactive, StringComparison.OrdinalIgnoreCase)) return false;
-            if (string.Equals(s, Constants.Status.FieldActive, StringComparison.OrdinalIgnoreCase)) return true;
-        }
-
-        if (!string.IsNullOrWhiteSpace(isActiveRaw) && bool.TryParse(isActiveRaw, out var b))
-            return b;
-
-        return true;
+        // Cheap heuristic: multipart bodies contain Content-Disposition and boundary-like starts
+        var s = Encoding.UTF8.GetString(body, 0, Math.Min(body.Length, 4096));
+        return s.StartsWith("--") && s.Contains("Content-Disposition:", StringComparison.OrdinalIgnoreCase);
     }
 
-    private static string AppendOptionalFieldNotes(string existingNotes, string[] row, Dictionary<string, int> headerIndex)
-    {
-        var notes = (existingNotes ?? "").Trim();
-        var extras = new List<string>();
-        string GetOpt(string key) => CsvMini.Get(row, headerIndex, key).Trim();
+    private static string GetHeader(HttpRequestData req, string name)
+        => req.Headers.TryGetValues(name, out var vals) ? (vals.FirstOrDefault() ?? "") : "";
 
-        var lights = GetOpt("lights");
-        if (!string.IsNullOrWhiteSpace(lights)) extras.Add($"Lights: {lights}");
+    private static string StripBom(string s) => (s ?? "").TrimStart('\uFEFF');
 
-        var cage = GetOpt("battingcage");
-        if (!string.IsNullOrWhiteSpace(cage)) extras.Add($"Batting cage: {cage}");
+    private static string NormalizeNewlines(string s)
+        => (s ?? "").Replace("\r\n", "\n").Replace("\r", "\n");
 
-        var mound = GetOpt("portablemound");
-        if (!string.IsNullOrWhiteSpace(mound)) extras.Add($"Portable mound: {mound}");
-
-        var lockCode = GetOpt("fieldlockcode");
-        if (!string.IsNullOrWhiteSpace(lockCode)) extras.Add($"Lock code: {lockCode}");
-
-        var fieldNotes = GetOpt("fieldnotes");
-        if (!string.IsNullOrWhiteSpace(fieldNotes)) extras.Add(fieldNotes);
-
-        if (extras.Count == 0) return notes;
-
-        var extraText = string.Join(" | ", extras);
-        if (string.IsNullOrWhiteSpace(notes)) return extraText;
-        if (notes.Contains(extraText, StringComparison.OrdinalIgnoreCase)) return notes;
-        return $"{notes} | {extraText}";
-    }
-
-    [Function("ImportFieldsGrid")]
-    public async Task<HttpResponseData> RunGrid(
-        [HttpTrigger(AuthorizationLevel.Anonymous, "post", Route = "import/fields/grid")] HttpRequestData req)
+    private static class MultipartFormData
     {
         try
         {

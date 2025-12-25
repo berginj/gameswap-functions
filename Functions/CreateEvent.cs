@@ -1,5 +1,7 @@
 using System.Net;
 using Azure.Data.Tables;
+using GameSwap.Functions.Models.Notifications;
+using GameSwap.Functions.Notifications;
 using GameSwap.Functions.Storage;
 using Microsoft.Azure.Functions.Worker;
 using Microsoft.Azure.Functions.Worker.Http;
@@ -11,13 +13,15 @@ public class CreateEvent
 {
     private readonly ILogger _log;
     private readonly TableServiceClient _svc;
+    private readonly INotificationService _notifications;
 
     private const string EventsTableName = Constants.Tables.Events;
 
-    public CreateEvent(ILoggerFactory lf, TableServiceClient tableServiceClient)
+    public CreateEvent(ILoggerFactory lf, TableServiceClient tableServiceClient, INotificationService notifications)
     {
         _log = lf.CreateLogger<CreateEvent>();
         _svc = tableServiceClient;
+        _notifications = notifications;
     }
 
     public record CreateEventReq(
@@ -111,6 +115,24 @@ public class CreateEvent
             };
 
             await table.AddEntityAsync(entity);
+            await _notifications.EnqueueAsync(new NotificationRequest(
+                NotificationEventTypes.EventCreated,
+                leagueId,
+                eventId,
+                null,
+                null,
+                division,
+                teamId,
+                null,
+                now,
+                new Dictionary<string, string>
+                {
+                    ["Title"] = title,
+                    ["EventDate"] = eventDate,
+                    ["StartTime"] = startTime,
+                    ["EndTime"] = endTime,
+                    ["Location"] = location
+                }));
 
             return ApiResponses.Ok(req, new
             {
