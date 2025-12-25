@@ -1,110 +1,130 @@
-import { useState } from 'react'
+import { useMemo, useState } from 'react'
+import { useIsAuthenticated, useMsal } from '@azure/msal-react'
 import './App.css'
+import { apiConfig, loginRequest } from './authConfig'
+
+const API_BASE = import.meta.env.VITE_API_BASE_URL ?? ''
+
+async function apiFetch(path, { leagueId, body, method = 'GET' } = {}) {
+  const headers = {}
+  if (leagueId) {
+    headers['x-league-id'] = leagueId
+  }
+  if (body) {
+    headers['Content-Type'] = 'application/json'
+  }
+
+  const response = await fetch(`${API_BASE}${path}`, {
+    method,
+    headers,
+    body: body ? JSON.stringify(body) : undefined,
+  })
+
+  const text = await response.text()
+  let data = null
+  if (text) {
+    try {
+      data = JSON.parse(text)
+    } catch (err) {
+      data = { message: text }
+    }
+  }
+
+  if (!response.ok) {
+    const message = data?.message || data?.error || response.statusText
+    throw new Error(message)
+  }
+
+  return data
+}
 
 function App() {
-  const [loginEmail, setLoginEmail] = useState('')
-  const [loggedInEmail, setLoggedInEmail] = useState('')
-  const [eventName, setEventName] = useState('')
-  const [eventDate, setEventDate] = useState('')
-  const [eventStatus, setEventStatus] = useState('')
-  const [importFileName, setImportFileName] = useState('')
+  const { instance, accounts } = useMsal()
+  const isAuthenticated = useIsAuthenticated()
+  const [apiResult, setApiResult] = useState(null)
+  const [apiError, setApiError] = useState('')
 
-  const handleLogin = (event) => {
-    event.preventDefault()
-    if (loginEmail.trim()) {
-      setLoggedInEmail(loginEmail.trim())
+  const account = useMemo(() => accounts[0], [accounts])
+
+  const handleLogin = async () => {
+    setApiError('')
+    await instance.loginPopup(loginRequest)
+  }
+
+  const handleLogout = async () => {
+    setApiError('')
+    setApiResult(null)
+    if (account) {
+      await instance.logoutPopup({ account })
+    } else {
+      await instance.logoutPopup()
     }
   }
 
-  const handleCreateEvent = (event) => {
-    event.preventDefault()
-    if (eventName.trim() && eventDate.trim()) {
-      setEventStatus(`Event "${eventName.trim()}" scheduled for ${eventDate.trim()}`)
-    }
-  }
+  const handleFetchProfile = async () => {
+    setApiError('')
+    setApiResult(null)
 
-  const handleImport = (event) => {
-    const file = event.target.files?.[0]
-    setImportFileName(file ? file.name : '')
+    try {
+      const tokenResponse = await instance.acquireTokenSilent({
+        ...loginRequest,
+        account,
+      })
+
+      const response = await fetch(`${apiConfig.baseUrl}/me`, {
+        headers: {
+          Authorization: `Bearer ${tokenResponse.accessToken}`,
+        },
+      })
+
+      if (!response.ok) {
+        const text = await response.text()
+        throw new Error(text || `Request failed (${response.status})`)
+      }
+
+      const data = await response.json()
+      setApiResult(data)
+    } catch (error) {
+      setApiError(error?.message || 'Unable to fetch profile.')
+    }
   }
 
   return (
-    <div className="app">
-      <header>
-        <h1>GameSwap Scheduler</h1>
-        <p>Manage logins, events, and bulk imports in one place.</p>
-      </header>
-
-      <section aria-labelledby="login-title" className="card">
-        <h2 id="login-title">Login</h2>
-        <form onSubmit={handleLogin} className="form">
-          <label htmlFor="login-email">Email</label>
-          <input
-            id="login-email"
-            data-testid="login-email"
-            type="email"
-            value={loginEmail}
-            onChange={(event) => setLoginEmail(event.target.value)}
-            placeholder="coach@example.com"
-          />
-          <button data-testid="login-submit" type="submit">
-            Sign in
-          </button>
-        </form>
-        {loggedInEmail && (
-          <p data-testid="login-status" className="status">
-            Logged in as {loggedInEmail}
-          </p>
+    <>
+      <div className="card">
+        <h1>GameSwap Admin</h1>
+        <p className="subtitle">
+          Sign in with Microsoft Entra ID to manage leagues and schedules.
+        </p>
+        <div className="actions">
+          {!isAuthenticated ? (
+            <button onClick={handleLogin}>Sign in</button>
+          ) : (
+            <>
+              <button onClick={handleFetchProfile}>Load profile</button>
+              <button className="secondary" onClick={handleLogout}>
+                Sign out
+              </button>
+            </>
+          )}
+        </div>
+        <div className="status">
+          <div>
+            <strong>Status:</strong>{' '}
+            {isAuthenticated ? 'Authenticated' : 'Signed out'}
+          </div>
+          {account?.username && (
+            <div>
+              <strong>Account:</strong> {account.username}
+            </div>
+          )}
+        </div>
+        {apiError && <pre className="error">{apiError}</pre>}
+        {apiResult && (
+          <pre className="result">{JSON.stringify(apiResult, null, 2)}</pre>
         )}
-      </section>
-
-      <section aria-labelledby="event-title" className="card">
-        <h2 id="event-title">Create Event</h2>
-        <form onSubmit={handleCreateEvent} className="form">
-          <label htmlFor="event-name">Event name</label>
-          <input
-            id="event-name"
-            data-testid="event-name"
-            value={eventName}
-            onChange={(event) => setEventName(event.target.value)}
-            placeholder="Field cleanup"
-          />
-          <label htmlFor="event-date">Date</label>
-          <input
-            id="event-date"
-            data-testid="event-date"
-            type="date"
-            value={eventDate}
-            onChange={(event) => setEventDate(event.target.value)}
-          />
-          <button data-testid="event-submit" type="submit">
-            Create event
-          </button>
-        </form>
-        {eventStatus && (
-          <p data-testid="event-status" className="status">
-            {eventStatus}
-          </p>
-        )}
-      </section>
-
-      <section aria-labelledby="import-title" className="card">
-        <h2 id="import-title">Bulk Import</h2>
-        <label htmlFor="import-file">Upload CSV</label>
-        <input
-          id="import-file"
-          data-testid="import-file"
-          type="file"
-          accept=".csv"
-          onChange={handleImport}
-        />
-        {importFileName && (
-          <p data-testid="import-status" className="status">
-            Ready to import: {importFileName}
-          </p>
-        )}
-      </section>
-    </div>
+      </div>
+    </>
   )
 }
 

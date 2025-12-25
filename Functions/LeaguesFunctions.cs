@@ -24,17 +24,17 @@ public class LeaguesFunctions
     public record CreateLeagueReq(string? leagueId, string? name, string? timezone);
     public record PatchLeagueReq(string? name, string? timezone, string? status, LeagueContact? contact);
 
-    private static LeagueDto ToDto(TableEntity e)
+    private static LeagueDto ToDto(LeagueEntity e)
     {
         return new LeagueDto(
             leagueId: e.RowKey,
-            name: (e.GetString("Name") ?? e.RowKey).Trim(),
-            timezone: (e.GetString("Timezone") ?? "America/New_York").Trim(),
-            status: (e.GetString("Status") ?? "Active").Trim(),
+            name: (e.Name ?? e.RowKey).Trim(),
+            timezone: (e.Timezone ?? "America/New_York").Trim(),
+            status: (e.Status ?? "Active").Trim(),
             contact: new LeagueContact(
-                name: (e.GetString("ContactName") ?? "").Trim(),
-                email: (e.GetString("ContactEmail") ?? "").Trim(),
-                phone: (e.GetString("ContactPhone") ?? "").Trim()
+                name: (e.ContactName ?? "").Trim(),
+                email: (e.ContactEmail ?? "").Trim(),
+                phone: (e.ContactPhone ?? "").Trim()
             )
         );
     }
@@ -47,9 +47,9 @@ public class LeaguesFunctions
         {
             var table = await TableClients.GetTableAsync(_svc, Constants.Tables.Leagues);
             var list = new List<LeagueDto>();
-            await foreach (var e in table.QueryAsync<TableEntity>(x => x.PartitionKey == Constants.Pk.Leagues))
+            await foreach (var e in table.QueryAsync<LeagueEntity>(x => x.PartitionKey == Constants.Pk.Leagues))
             {
-                var status = (e.GetString("Status") ?? "Active").Trim();
+                var status = (e.Status ?? "Active").Trim();
                 if (string.Equals(status, "Disabled", StringComparison.OrdinalIgnoreCase) ||
                     string.Equals(status, "Deleted", StringComparison.OrdinalIgnoreCase))
                     continue;
@@ -79,7 +79,7 @@ public class LeaguesFunctions
             var table = await TableClients.GetTableAsync(_svc, Constants.Tables.Leagues);
             try
             {
-                var e = (await table.GetEntityAsync<TableEntity>(Constants.Pk.Leagues, leagueId)).Value;
+                var e = (await table.GetEntityAsync<LeagueEntity>(Constants.Pk.Leagues, leagueId)).Value;
                 return ApiResponses.Ok(req, ToDto(e));
             }
             catch (RequestFailedException ex) when (ex.Status == 404)
@@ -113,28 +113,28 @@ public class LeaguesFunctions
                 return ApiResponses.Error(req, HttpStatusCode.BadRequest, "BAD_REQUEST", "Invalid JSON body");
 
             var table = await TableClients.GetTableAsync(_svc, Constants.Tables.Leagues);
-            TableEntity e;
+            LeagueEntity e;
             try
             {
-                e = (await table.GetEntityAsync<TableEntity>(Constants.Pk.Leagues, leagueId)).Value;
+                e = (await table.GetEntityAsync<LeagueEntity>(Constants.Pk.Leagues, leagueId)).Value;
             }
             catch (RequestFailedException ex) when (ex.Status == 404)
             {
                 return ApiResponses.Error(req, HttpStatusCode.NotFound, "NOT_FOUND", $"league not found: {leagueId}");
             }
 
-            if (!string.IsNullOrWhiteSpace(body.name)) e["Name"] = body.name!.Trim();
-            if (!string.IsNullOrWhiteSpace(body.timezone)) e["Timezone"] = body.timezone!.Trim();
-            if (!string.IsNullOrWhiteSpace(body.status)) e["Status"] = body.status!.Trim();
+            if (!string.IsNullOrWhiteSpace(body.name)) e.Name = body.name!.Trim();
+            if (!string.IsNullOrWhiteSpace(body.timezone)) e.Timezone = body.timezone!.Trim();
+            if (!string.IsNullOrWhiteSpace(body.status)) e.Status = body.status!.Trim();
 
             if (body.contact is not null)
             {
-                e["ContactName"] = (body.contact.name ?? "").Trim();
-                e["ContactEmail"] = (body.contact.email ?? "").Trim();
-                e["ContactPhone"] = (body.contact.phone ?? "").Trim();
+                e.ContactName = (body.contact.name ?? "").Trim();
+                e.ContactEmail = (body.contact.email ?? "").Trim();
+                e.ContactPhone = (body.contact.phone ?? "").Trim();
             }
 
-            e["UpdatedUtc"] = DateTimeOffset.UtcNow;
+            e.UpdatedUtc = DateTimeOffset.UtcNow;
             await table.UpdateEntityAsync(e, e.ETag, TableUpdateMode.Replace);
 
             return ApiResponses.Ok(req, ToDto(e));
@@ -157,11 +157,11 @@ public class LeaguesFunctions
         try
         {
             var me = IdentityUtil.GetMe(req);
-            await ApiGuards.RequireGlobalAdminAsync(_svc, me.UserId);
+            await ApiGuards.RequireGlobalAdminAsync(_svc, me);
 
             var table = await TableClients.GetTableAsync(_svc, Constants.Tables.Leagues);
             var list = new List<LeagueDto>();
-            await foreach (var e in table.QueryAsync<TableEntity>(x => x.PartitionKey == Constants.Pk.Leagues))
+            await foreach (var e in table.QueryAsync<LeagueEntity>(x => x.PartitionKey == Constants.Pk.Leagues))
                 list.Add(ToDto(e));
 
             return ApiResponses.Ok(req, list.OrderBy(x => x.leagueId));
@@ -184,7 +184,7 @@ public class LeaguesFunctions
         try
         {
             var me = IdentityUtil.GetMe(req);
-            await ApiGuards.RequireGlobalAdminAsync(_svc, me.UserId);
+            await ApiGuards.RequireGlobalAdminAsync(_svc, me);
 
             var body = await HttpUtil.ReadJsonAsync<CreateLeagueReq>(req);
             if (body is null)
@@ -200,17 +200,19 @@ public class LeaguesFunctions
                 return ApiResponses.Error(req, HttpStatusCode.BadRequest, "BAD_REQUEST", "name is required");
 
             var now = DateTimeOffset.UtcNow;
-            var e = new TableEntity(Constants.Pk.Leagues, leagueId)
+            var e = new LeagueEntity
             {
-                ["LeagueId"] = leagueId,
-                ["Name"] = name,
-                ["Timezone"] = timezone,
-                ["Status"] = "Active",
-                ["ContactName"] = "",
-                ["ContactEmail"] = "",
-                ["ContactPhone"] = "",
-                ["CreatedUtc"] = now,
-                ["UpdatedUtc"] = now
+                PartitionKey = Constants.Pk.Leagues,
+                RowKey = leagueId,
+                LeagueId = leagueId,
+                Name = name,
+                Timezone = timezone,
+                Status = "Active",
+                ContactName = "",
+                ContactEmail = "",
+                ContactPhone = "",
+                CreatedUtc = now,
+                UpdatedUtc = now
             };
 
             var table = await TableClients.GetTableAsync(_svc, Constants.Tables.Leagues);

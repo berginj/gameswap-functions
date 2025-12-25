@@ -1,5 +1,6 @@
 using System.Net;
 using Azure.Data.Tables;
+using GameSwap.Functions.Models;
 using GameSwap.Functions.Storage;
 using Microsoft.Azure.Functions.Worker;
 using Microsoft.Azure.Functions.Worker.Http;
@@ -20,24 +21,6 @@ public class GetSlots
         _svc = tableServiceClient;
     }
 
-    public record SlotDto(
-        string slotId,
-        string leagueId,
-        string division,
-        string offeringTeamId,
-        string confirmedTeamId,
-        string gameDate,
-        string startTime,
-        string endTime,
-        string parkName,
-        string fieldName,
-        string displayName,
-        string fieldKey,
-        string gameType,
-        string status,
-        string notes
-    );
-
     [Function("GetSlots")]
     public async Task<HttpResponseData> Run(
         [HttpTrigger(AuthorizationLevel.Anonymous, "get", Route = "slots")] HttpRequestData req)
@@ -54,6 +37,14 @@ public class GetSlots
             var statusFilter = (ApiGuards.GetQueryParam(req, "status") ?? "").Trim();
             var dateFrom = (ApiGuards.GetQueryParam(req, "dateFrom") ?? "").Trim();
             var dateTo = (ApiGuards.GetQueryParam(req, "dateTo") ?? "").Trim();
+            var sport = (ApiGuards.GetQueryParam(req, "sport") ?? "").Trim();
+            var skill = (ApiGuards.GetQueryParam(req, "skill") ?? "").Trim();
+            var location = (ApiGuards.GetQueryParam(req, "location") ?? "").Trim();
+
+            if (!ScheduleValidation.TryValidateOptionalDate(dateFrom, "dateFrom", out var dateFromErr))
+                return ApiResponses.Error(req, HttpStatusCode.BadRequest, "BAD_REQUEST", dateFromErr);
+            if (!ScheduleValidation.TryValidateOptionalDate(dateTo, "dateTo", out var dateToErr))
+                return ApiResponses.Error(req, HttpStatusCode.BadRequest, "BAD_REQUEST", dateToErr);
 
             var table = await TableClients.GetTableAsync(_svc, SlotsTableName);
             // Partitioning is SLOT#{leagueId}#{division}
@@ -79,7 +70,12 @@ public class GetSlots
             if (!string.IsNullOrWhiteSpace(dateTo))
                 filter += $" and GameDate le '{ApiGuards.EscapeOData(dateTo)}'";
 
-            var list = new List<SlotDto>();
+            if (!string.IsNullOrWhiteSpace(sport))
+                filter += $" and Sport eq '{ApiGuards.EscapeOData(sport)}'";
+            if (!string.IsNullOrWhiteSpace(skill))
+                filter += $" and Skill eq '{ApiGuards.EscapeOData(skill)}'";
+
+            var list = new List<SlotOpportunityDto>();
 
             await foreach (var e in table.QueryAsync<TableEntity>(filter: filter))
             {
@@ -97,6 +93,8 @@ public class GetSlots
 
                 var gameType = e.GetString("GameType") ?? "Swap";
                 var status = e.GetString("Status") ?? Constants.Status.SlotOpen;
+                var sportValue = e.GetString("Sport") ?? "";
+                var skillValue = e.GetString("Skill") ?? "";
 
                 // Default behavior (when no explicit status filter is provided):
                 // return Open + Confirmed only. Cancelled is only returned when explicitly requested.
@@ -105,7 +103,10 @@ public class GetSlots
                 var notes = e.GetString("Notes") ?? "";
                 var confirmedTeamId = e.GetString("ConfirmedTeamId") ?? "";
 
-                list.Add(new SlotDto(
+                if (!ScheduleValidation.LocationMatches(location, displayName, parkName, fieldName, fieldKey))
+                    continue;
+
+                list.Add(new SlotOpportunityDto(
                     slotId: slotId,
                     leagueId: leagueId,
                     division: e.GetString("Division") ?? division,
@@ -120,6 +121,8 @@ public class GetSlots
                     fieldKey: fieldKey,
                     gameType: gameType,
                     status: status,
+                    sport: sportValue,
+                    skill: skillValue,
                     notes: notes
                 ));
             }
