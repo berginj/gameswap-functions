@@ -1,5 +1,42 @@
 import { useMemo, useState } from 'react'
+import { useIsAuthenticated, useMsal } from '@azure/msal-react'
 import './App.css'
+import { apiConfig, loginRequest } from './authConfig'
+
+const API_BASE = import.meta.env.VITE_API_BASE_URL ?? ''
+
+async function apiFetch(path, { leagueId, body, method = 'GET' } = {}) {
+  const headers = {}
+  if (leagueId) {
+    headers['x-league-id'] = leagueId
+  }
+  if (body) {
+    headers['Content-Type'] = 'application/json'
+  }
+
+  const response = await fetch(`${API_BASE}${path}`, {
+    method,
+    headers,
+    body: body ? JSON.stringify(body) : undefined,
+  })
+
+  const text = await response.text()
+  let data = null
+  if (text) {
+    try {
+      data = JSON.parse(text)
+    } catch (err) {
+      data = { message: text }
+    }
+  }
+
+  if (!response.ok) {
+    const message = data?.message || data?.error || response.statusText
+    throw new Error(message)
+  }
+
+  return data
+}
 
 const IMPORT_TYPES = [
   {
@@ -109,226 +146,92 @@ const downloadCsvTemplate = (headers, filename) => {
 }
 
 function App() {
-  const [apiBase, setApiBase] = useState('http://localhost:7071')
-  const [leagueId, setLeagueId] = useState('')
-  const [selectedKey, setSelectedKey] = useState('fields')
-  const [csvPreview, setCsvPreview] = useState([])
-  const [gridPreview, setGridPreview] = useState([])
-  const [gridText, setGridText] = useState('')
-  const [useHeaderRow, setUseHeaderRow] = useState(true)
-  const [status, setStatus] = useState(null)
-  const [errors, setErrors] = useState([])
+  const { instance, accounts } = useMsal()
+  const isAuthenticated = useIsAuthenticated()
+  const [apiResult, setApiResult] = useState(null)
+  const [apiError, setApiError] = useState('')
 
-  const selectedType = useMemo(
-    () => IMPORT_TYPES.find((type) => type.key === selectedKey),
-    [selectedKey]
-  )
+  const account = useMemo(() => accounts[0], [accounts])
 
-  const handleCsvFile = async (event) => {
-    const file = event.target.files?.[0]
-    if (!file) return
-    const text = await file.text()
-    const rows = parseCsv(text)
-    setCsvPreview(rows.slice(0, 6))
-    setStatus(null)
-    setErrors([])
-
-    const formData = new FormData()
-    formData.append('file', file)
-
-    const response = await fetch(`${apiBase}/api/import/${selectedKey}`, {
-      method: 'POST',
-      headers: {
-        'x-league-id': leagueId
-      },
-      body: formData
-    })
-
-    const payload = await response.json().catch(() => null)
-    setStatus(payload)
-    setErrors(payload?.data?.errors ?? payload?.error?.details?.errors ?? [])
+  const handleLogin = async () => {
+    setApiError('')
+    await instance.loginPopup(loginRequest)
   }
 
-  const handlePastePreview = () => {
-    const rows = parseGridText(gridText)
-    const header = useHeaderRow ? rows[0] ?? [] : selectedType.csvHeaders
-    const dataRows = useHeaderRow ? rows.slice(1) : rows
-    const previewRows = [header, ...dataRows].slice(0, 6)
-    setGridPreview(previewRows)
+  const handleLogout = async () => {
+    setApiError('')
+    setApiResult(null)
+    if (account) {
+      await instance.logoutPopup({ account })
+    } else {
+      await instance.logoutPopup()
+    }
   }
 
-  const handleGridImport = async () => {
-    const rows = parseGridText(gridText)
-    const headers = useHeaderRow ? rows[0] ?? [] : selectedType.csvHeaders
-    const dataRows = useHeaderRow ? rows.slice(1) : rows
+  const handleFetchProfile = async () => {
+    setApiError('')
+    setApiResult(null)
 
-    const response = await fetch(`${apiBase}/api/import/${selectedKey}/grid`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'x-league-id': leagueId
-      },
-      body: JSON.stringify({ headers, rows: dataRows })
-    })
+    try {
+      const tokenResponse = await instance.acquireTokenSilent({
+        ...loginRequest,
+        account,
+      })
 
-    const payload = await response.json().catch(() => null)
-    setStatus(payload)
-    setErrors(payload?.data?.errors ?? payload?.error?.details?.errors ?? [])
+      const response = await fetch(`${apiConfig.baseUrl}/me`, {
+        headers: {
+          Authorization: `Bearer ${tokenResponse.accessToken}`,
+        },
+      })
+
+      if (!response.ok) {
+        const text = await response.text()
+        throw new Error(text || `Request failed (${response.status})`)
+      }
+
+      const data = await response.json()
+      setApiResult(data)
+    } catch (error) {
+      setApiError(error?.message || 'Unable to fetch profile.')
+    }
   }
 
   return (
-    <div className="app">
-      <header className="app__header">
-        <h1>Bulk Import</h1>
-        <p>Upload CSVs or paste grid data for fields, teams, and events.</p>
-      </header>
-
-      <section className="card form-section">
-        <div className="form-row">
-          <label>
-            API Base URL
-            <input
-              value={apiBase}
-              onChange={(event) => setApiBase(event.target.value)}
-              placeholder="http://localhost:7071"
-            />
-          </label>
-          <label>
-            League ID
-            <input
-              value={leagueId}
-              onChange={(event) => setLeagueId(event.target.value)}
-              placeholder="league_123"
-            />
-          </label>
+    <>
+      <div className="card">
+        <h1>GameSwap Admin</h1>
+        <p className="subtitle">
+          Sign in with Microsoft Entra ID to manage leagues and schedules.
+        </p>
+        <div className="actions">
+          {!isAuthenticated ? (
+            <button onClick={handleLogin}>Sign in</button>
+          ) : (
+            <>
+              <button onClick={handleFetchProfile}>Load profile</button>
+              <button className="secondary" onClick={handleLogout}>
+                Sign out
+              </button>
+            </>
+          )}
         </div>
-      </section>
-
-      <section className="card form-section">
-        <div className="type-selector">
-          {IMPORT_TYPES.map((type) => (
-            <button
-              key={type.key}
-              className={selectedKey === type.key ? 'active' : ''}
-              onClick={() => setSelectedKey(type.key)}
-              type="button"
-            >
-              {type.label}
-            </button>
-          ))}
-        </div>
-
-        <div className="template-row">
-          <span>Template:</span>
-          <button
-            type="button"
-            onClick={() => downloadCsvTemplate(selectedType.csvHeaders, `${selectedType.key}-template.csv`)}
-          >
-            Download CSV template
-          </button>
-        </div>
-      </section>
-
-      <section className="grid">
-        <div className="card">
-          <h2>CSV Upload</h2>
-          <p>Upload a CSV file to import {selectedType.label.toLowerCase()}.</p>
-          <input type="file" accept=".csv" onChange={handleCsvFile} />
-          {csvPreview.length > 0 && (
-            <div className="preview">
-              <h3>CSV Preview</h3>
-              <PreviewTable rows={csvPreview} />
+        <div className="status">
+          <div>
+            <strong>Status:</strong>{' '}
+            {isAuthenticated ? 'Authenticated' : 'Signed out'}
+          </div>
+          {account?.username && (
+            <div>
+              <strong>Account:</strong> {account.username}
             </div>
           )}
         </div>
-
-        <div className="card">
-          <h2>Paste to Grid</h2>
-          <p>Paste rows copied from Excel or Google Sheets (tab-separated).</p>
-          <textarea
-            value={gridText}
-            onChange={(event) => setGridText(event.target.value)}
-            placeholder="Paste rows here..."
-            rows={8}
-          />
-          <div className="toggle-row">
-            <label>
-              <input
-                type="checkbox"
-                checked={useHeaderRow}
-                onChange={(event) => setUseHeaderRow(event.target.checked)}
-              />
-              First row contains headers
-            </label>
-          </div>
-          <div className="button-row">
-            <button type="button" onClick={handlePastePreview}>
-              Preview
-            </button>
-            <button type="button" className="primary" onClick={handleGridImport}>
-              Import grid data
-            </button>
-          </div>
-          {gridPreview.length > 0 && (
-            <div className="preview">
-              <h3>Grid Preview</h3>
-              <PreviewTable rows={gridPreview} />
-            </div>
-          )}
-        </div>
-      </section>
-
-      <section className="card">
-        <h2>Import Status</h2>
-        <p>Results from the most recent import request.</p>
-        <pre className="status-block">{status ? JSON.stringify(status, null, 2) : 'No import executed yet.'}</pre>
-      </section>
-
-      <section className="card">
-        <h2>Errors</h2>
-        {errors.length === 0 ? (
-          <p>No errors to show.</p>
-        ) : (
-          <ul className="error-list">
-            {errors.map((error, index) => (
-              <li key={`${error.row}-${error.column}-${index}`}>
-                <strong>Row {error.row}</strong> — {error.column}: {error.reason}
-                {error.value ? <em> ({error.value})</em> : null}
-              </li>
-            ))}
-          </ul>
+        {apiError && <pre className="error">{apiError}</pre>}
+        {apiResult && (
+          <pre className="result">{JSON.stringify(apiResult, null, 2)}</pre>
         )}
-      </section>
-    </div>
-  )
-}
-
-const PreviewTable = ({ rows }) => {
-  if (!rows || rows.length === 0) return null
-  const header = rows[0]
-  const body = rows.slice(1)
-
-  return (
-    <div className="table-wrapper">
-      <table>
-        <thead>
-          <tr>
-            {header.map((cell, index) => (
-              <th key={`head-${index}`}>{cell}</th>
-            ))}
-          </tr>
-        </thead>
-        <tbody>
-          {body.map((row, rowIndex) => (
-            <tr key={`row-${rowIndex}`}>
-              {row.map((cell, index) => (
-                <td key={`cell-${rowIndex}-${index}`}>{cell}</td>
-              ))}
-            </tr>
-          ))}
-        </tbody>
-      </table>
-    </div>
+      </div>
+    </>
   )
 }
 

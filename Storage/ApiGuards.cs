@@ -7,6 +7,8 @@ namespace GameSwap.Functions.Storage;
 
 public static class ApiGuards
 {
+    private static readonly string[] DefaultAdminRoles = { "GlobalAdmin", "Admin" };
+    private static IReadOnlyCollection<string>? _adminRolesCache;
     // ==== Tables (public because other funcs reference it) ====
     // Prefer Storage.Constants for any new work.
     public const string MembershipsTableName = Constants.Tables.Memberships;
@@ -128,6 +130,8 @@ public static class ApiGuards
         if (string.IsNullOrWhiteSpace(me.UserId) || me.UserId == "UNKNOWN")
             throw new HttpError((int)HttpStatusCode.Unauthorized, "Not authenticated.");
 
+        if (HasAdminRole(me.Roles)) return;
+
         if (!await IsGlobalAdminAsync(svc, me.UserId))
             throw new HttpError((int)HttpStatusCode.Forbidden, "Forbidden");
     }
@@ -175,4 +179,30 @@ public static class ApiGuards
     public static string? GetQueryValue(HttpRequestData req, string key) => GetQueryParam(req, key);
 
     public static string EscapeOData(string s) => (s ?? "").Replace("'", "''");
+
+    private static bool HasAdminRole(IReadOnlyCollection<string> roles)
+    {
+        if (roles is null || roles.Count == 0) return false;
+        var adminRoles = GetAdminRoles();
+        return roles.Any(r => adminRoles.Contains(r, StringComparer.OrdinalIgnoreCase));
+    }
+
+    private static IReadOnlyCollection<string> GetAdminRoles()
+    {
+        if (_adminRolesCache is not null) return _adminRolesCache;
+
+        var configured = Environment.GetEnvironmentVariable("AUTH_ADMIN_ROLES");
+        if (string.IsNullOrWhiteSpace(configured))
+        {
+            _adminRolesCache = DefaultAdminRoles;
+            return _adminRolesCache;
+        }
+
+        _adminRolesCache = configured
+            .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+
+        return _adminRolesCache;
+    }
 }
