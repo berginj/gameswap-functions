@@ -3,6 +3,7 @@ using System.Net;
 using System.Security.Claims;
 using Microsoft.Azure.Functions.Worker;
 using Microsoft.Azure.Functions.Worker.Middleware;
+using Microsoft.Azure.Functions.Worker.Http;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
 using Microsoft.IdentityModel.Protocols;
@@ -160,7 +161,8 @@ public sealed class JwtValidationMiddleware : IFunctionsWorkerMiddleware
 
     private static async Task SetUnauthorizedAsync(FunctionContext context, WorkerHttpRequestData request, string message)
     {
-        var response = request.CreateResponse(HttpStatusCode.Unauthorized);
+        var response = request.CreateResponse();
+        response.StatusCode = HttpStatusCode.Unauthorized;
         await response.WriteStringAsync(message);
         context.GetInvocationResult().Value = response;
     }

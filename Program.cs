@@ -1,4 +1,5 @@
 using GameSwap.Functions.Auth;
+using GameSwap.Functions.Notifications;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 
