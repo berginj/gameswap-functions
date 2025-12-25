@@ -157,7 +157,7 @@ public class LeaguesFunctions
         try
         {
             var me = IdentityUtil.GetMe(req);
-            await ApiGuards.RequireGlobalAdminAsync(_svc, me.UserId);
+            await ApiGuards.RequireGlobalAdminAsync(_svc, me);
 
             var table = await TableClients.GetTableAsync(_svc, Constants.Tables.Leagues);
             var list = new List<LeagueDto>();
@@ -184,7 +184,7 @@ public class LeaguesFunctions
         try
         {
             var me = IdentityUtil.GetMe(req);
-            await ApiGuards.RequireGlobalAdminAsync(_svc, me.UserId);
+            await ApiGuards.RequireGlobalAdminAsync(_svc, me);
 
             var body = await HttpUtil.ReadJsonAsync<CreateLeagueReq>(req);
             if (body is null)

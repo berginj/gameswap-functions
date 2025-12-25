@@ -7,7 +7,7 @@ namespace GameSwap.Functions.Storage;
 
 public static class IdentityUtil
 {
-    public sealed record Me(string UserId, string Email);
+    public sealed record Me(string UserId, string Email, IReadOnlyCollection<string> Roles);
 
     public static Me GetMe(HttpRequestData req)
     {
@@ -60,9 +60,12 @@ public static class IdentityUtil
                             "upn"
                         );
 
+                    var roles = FindRoles(claims);
+
                     return new Me(
                         string.IsNullOrWhiteSpace(userId) ? "UNKNOWN" : userId!,
-                        string.IsNullOrWhiteSpace(email) ? "UNKNOWN" : email!
+                        string.IsNullOrWhiteSpace(email) ? "UNKNOWN" : email!,
+                        roles
                     );
                 }
                 catch
@@ -75,8 +78,11 @@ public static class IdentityUtil
         // 2) Fallback headers (useful for local/dev/testing)
         var userIdFallback = req.Headers.TryGetValues("x-user-id", out var ids) ? ids.FirstOrDefault() : null;
         var emailFallback = req.Headers.TryGetValues("x-user-email", out var emails) ? emails.FirstOrDefault() : null;
+        var rolesFallback = req.Headers.TryGetValues("x-user-roles", out var roles)
+            ? ParseRoles(roles.FirstOrDefault())
+            : Array.Empty<string>();
 
-        return new Me(userIdFallback ?? "UNKNOWN", emailFallback ?? "UNKNOWN");
+        return new Me(userIdFallback ?? "UNKNOWN", emailFallback ?? "UNKNOWN", rolesFallback);
     }
 
     private static bool TryGetHeader(HttpRequestData req, string name, out string? value)
@@ -96,5 +102,38 @@ public static class IdentityUtil
         if (!root.TryGetProperty(prop, out var el)) return null;
         if (el.ValueKind != JsonValueKind.String) return null;
         return el.GetString();
+    }
+
+    private static IReadOnlyCollection<string> FindRoles(JsonElement claims)
+    {
+        if (claims.ValueKind != JsonValueKind.Array) return Array.Empty<string>();
+        var roles = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var item in claims.EnumerateArray())
+        {
+            var typ = item.TryGetProperty("typ", out var t) ? t.GetString() : null;
+            if (typ is null) continue;
+            if (!IsRoleClaim(typ)) continue;
+            var val = item.TryGetProperty("val", out var v) ? v.GetString() : null;
+            if (!string.IsNullOrWhiteSpace(val))
+            {
+                roles.Add(val);
+            }
+        }
+
+        return roles.ToArray();
+    }
+
+    private static bool IsRoleClaim(string type)
+        => string.Equals(type, "roles", StringComparison.OrdinalIgnoreCase)
+           || string.Equals(type, "role", StringComparison.OrdinalIgnoreCase)
+           || string.Equals(type, "http://schemas.microsoft.com/ws/2008/06/identity/claims/role",
+               StringComparison.OrdinalIgnoreCase);
+
+    private static IReadOnlyCollection<string> ParseRoles(string? raw)
+    {
+        if (string.IsNullOrWhiteSpace(raw)) return Array.Empty<string>();
+        return raw.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToArray();
     }
 }
