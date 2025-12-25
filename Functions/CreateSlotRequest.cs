@@ -257,7 +257,7 @@ public class CreateSlotRequest
             var et = (e.GetString("EndTime") ?? "").Trim();
 
             if (!TimeUtil.IsValidRange(st, et, out var s2, out var e2, out _)) continue;
-            if (!TimeUtil.Overlaps(startMin, endMin, s2, e2)) continue;
+            if (!SchedulingRules.Overlaps(startMin, endMin, s2, e2)) continue;
 
             return new
             {

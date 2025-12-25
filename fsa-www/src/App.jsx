@@ -1,33 +1,129 @@
-import { useState } from 'react'
-import reactLogo from './assets/react.svg'
-import viteLogo from '/vite.svg'
+import { useMemo, useState } from 'react'
+import { useIsAuthenticated, useMsal } from '@azure/msal-react'
 import './App.css'
+import { apiConfig, loginRequest } from './authConfig'
+
+const API_BASE = import.meta.env.VITE_API_BASE_URL ?? ''
+
+async function apiFetch(path, { leagueId, body, method = 'GET' } = {}) {
+  const headers = {}
+  if (leagueId) {
+    headers['x-league-id'] = leagueId
+  }
+  if (body) {
+    headers['Content-Type'] = 'application/json'
+  }
+
+  const response = await fetch(`${API_BASE}${path}`, {
+    method,
+    headers,
+    body: body ? JSON.stringify(body) : undefined,
+  })
+
+  const text = await response.text()
+  let data = null
+  if (text) {
+    try {
+      data = JSON.parse(text)
+    } catch (err) {
+      data = { message: text }
+    }
+  }
+
+  if (!response.ok) {
+    const message = data?.message || data?.error || response.statusText
+    throw new Error(message)
+  }
+
+  return data
+}
 
 function App() {
-  const [count, setCount] = useState(0)
+  const { instance, accounts } = useMsal()
+  const isAuthenticated = useIsAuthenticated()
+  const [apiResult, setApiResult] = useState(null)
+  const [apiError, setApiError] = useState('')
+
+  const account = useMemo(() => accounts[0], [accounts])
+
+  const handleLogin = async () => {
+    setApiError('')
+    await instance.loginPopup(loginRequest)
+  }
+
+  const handleLogout = async () => {
+    setApiError('')
+    setApiResult(null)
+    if (account) {
+      await instance.logoutPopup({ account })
+    } else {
+      await instance.logoutPopup()
+    }
+  }
+
+  const handleFetchProfile = async () => {
+    setApiError('')
+    setApiResult(null)
+
+    try {
+      const tokenResponse = await instance.acquireTokenSilent({
+        ...loginRequest,
+        account,
+      })
+
+      const response = await fetch(`${apiConfig.baseUrl}/me`, {
+        headers: {
+          Authorization: `Bearer ${tokenResponse.accessToken}`,
+        },
+      })
+
+      if (!response.ok) {
+        const text = await response.text()
+        throw new Error(text || `Request failed (${response.status})`)
+      }
+
+      const data = await response.json()
+      setApiResult(data)
+    } catch (error) {
+      setApiError(error?.message || 'Unable to fetch profile.')
+    }
+  }
 
   return (
     <>
-      <div>
-        <a href="https://vite.dev" target="_blank">
-          <img src={viteLogo} className="logo" alt="Vite logo" />
-        </a>
-        <a href="https://react.dev" target="_blank">
-          <img src={reactLogo} className="logo react" alt="React logo" />
-        </a>
-      </div>
-      <h1>Vite + React</h1>
       <div className="card">
-        <button onClick={() => setCount((count) => count + 1)}>
-          count is {count}
-        </button>
-        <p>
-          Edit <code>src/App.jsx</code> and save to test HMR
+        <h1>GameSwap Admin</h1>
+        <p className="subtitle">
+          Sign in with Microsoft Entra ID to manage leagues and schedules.
         </p>
+        <div className="actions">
+          {!isAuthenticated ? (
+            <button onClick={handleLogin}>Sign in</button>
+          ) : (
+            <>
+              <button onClick={handleFetchProfile}>Load profile</button>
+              <button className="secondary" onClick={handleLogout}>
+                Sign out
+              </button>
+            </>
+          )}
+        </div>
+        <div className="status">
+          <div>
+            <strong>Status:</strong>{' '}
+            {isAuthenticated ? 'Authenticated' : 'Signed out'}
+          </div>
+          {account?.username && (
+            <div>
+              <strong>Account:</strong> {account.username}
+            </div>
+          )}
+        </div>
+        {apiError && <pre className="error">{apiError}</pre>}
+        {apiResult && (
+          <pre className="result">{JSON.stringify(apiResult, null, 2)}</pre>
+        )}
       </div>
-      <p className="read-the-docs">
-        Click on the Vite and React logos to learn more
-      </p>
     </>
   )
 }

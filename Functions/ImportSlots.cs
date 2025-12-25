@@ -45,19 +45,8 @@ public class ImportSlots
             var header = rows[0];
             var idx = CsvMini.HeaderIndex(header);
 
-            // Required normalized columns
-            var required = new[]
-            {
-                "division",
-                "offeringteamid",
-                "gamedate",
-                "starttime",
-                "endtime",
-                "fieldkey"
-            };
-
-            var missing = required.Where(c => !idx.ContainsKey(c)).ToList();
-            if (missing.Count > 0)
+            var required = SlotImportValidation.RequiredColumns;
+            if (!SlotImportValidation.HasRequiredColumns(idx, out var missing))
             {
                 return HttpUtil.Json(req, HttpStatusCode.BadRequest, new
                 {
@@ -83,41 +72,28 @@ public class ImportSlots
                 var r = rows[i];
                 if (CsvMini.IsBlankRow(r)) { skipped++; continue; }
 
-                var division = CsvMini.Get(r, idx, "division").Trim();
-                var offeringTeamId = CsvMini.Get(r, idx, "offeringteamid").Trim();
-                var offeringEmail = CsvMini.Get(r, idx, "offeringemail").Trim();
-
-                var gameDate = CsvMini.Get(r, idx, "gamedate").Trim();
-                var startTime = CsvMini.Get(r, idx, "starttime").Trim();
-                var endTime = CsvMini.Get(r, idx, "endtime").Trim();
-
-                var fieldKeyRaw = CsvMini.Get(r, idx, "fieldkey").Trim();
-
-                var gameType = CsvMini.Get(r, idx, "gametype").Trim();
-                var notes = CsvMini.Get(r, idx, "notes").Trim();
-                var status = CsvMini.Get(r, idx, "status").Trim();
-
-                if (string.IsNullOrWhiteSpace(division) ||
-                    string.IsNullOrWhiteSpace(offeringTeamId) ||
-                    string.IsNullOrWhiteSpace(gameDate) ||
-                    string.IsNullOrWhiteSpace(startTime) ||
-                    string.IsNullOrWhiteSpace(endTime) ||
-                    string.IsNullOrWhiteSpace(fieldKeyRaw))
+                if (!SlotImportValidation.TryParseRow(r, idx, out var parsed, out var rowError))
                 {
                     rejected++;
-                    errors.Add(new { row = i + 1, error = "Division, OfferingTeamId, GameDate, StartTime, EndTime, FieldKey are required." });
+                    errors.Add(new { row = i + 1, error = rowError });
                     continue;
                 }
 
-                if (string.IsNullOrWhiteSpace(gameType)) gameType = "Swap";
-                if (string.IsNullOrWhiteSpace(status)) status = "Open";
+                var division = parsed.Division;
+                var offeringTeamId = parsed.OfferingTeamId;
+                var offeringEmail = parsed.OfferingEmail;
 
-                if (!TryParseFieldKey(fieldKeyRaw, out var parkCode, out var fieldCode))
-                {
-                    rejected++;
-                    errors.Add(new { row = i + 1, error = "Invalid FieldKey. Use parkCode/fieldCode." });
-                    continue;
-                }
+                var gameDate = parsed.GameDate;
+                var startTime = parsed.StartTime;
+                var endTime = parsed.EndTime;
+
+                var fieldKeyRaw = parsed.FieldKeyRaw;
+                var parkCode = parsed.ParkCode;
+                var fieldCode = parsed.FieldCode;
+
+                var gameType = parsed.GameType;
+                var notes = parsed.Notes;
+                var status = parsed.Status;
 
                 var fieldKey = $"{parkCode}|{fieldCode}";
                 if (!fieldLookup.TryGetValue(fieldKey, out var fieldMeta))
@@ -281,16 +257,4 @@ public class ImportSlots
         return sb.ToString();
     }
 
-    private static bool TryParseFieldKey(string raw, out string parkCode, out string fieldCode)
-    {
-        parkCode = "";
-        fieldCode = "";
-        var v = (raw ?? "").Trim().Trim('/');
-        var parts = v.Split('/', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
-        if (parts.Length != 2) return false;
-
-        parkCode = Slug.Make(parts[0]);
-        fieldCode = Slug.Make(parts[1]);
-        return !string.IsNullOrWhiteSpace(parkCode) && !string.IsNullOrWhiteSpace(fieldCode);
-    }
 }

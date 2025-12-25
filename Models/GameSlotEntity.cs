@@ -1,6 +1,8 @@
 using Azure;
 using Azure.Data.Tables;
 
+namespace GameSwap.Functions.Models;
+
 public class GameSlotEntity : ITableEntity
 {
     public string PartitionKey { get; set; } = default!; // Division

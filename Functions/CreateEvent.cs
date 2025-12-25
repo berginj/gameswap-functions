@@ -33,6 +33,8 @@ public class CreateEvent
         string? startTime,
         string? endTime,
         string? location,
+        string? sport,
+        string? skill,
         string? notes
     );
 
@@ -63,6 +65,8 @@ public class CreateEvent
             var startTime = (body.startTime ?? "").Trim();
             var endTime = (body.endTime ?? "").Trim();
             var location = (body.location ?? "").Trim();
+            var sport = (body.sport ?? "").Trim();
+            var skill = (body.skill ?? "").Trim();
             var notes = (body.notes ?? "").Trim();
 
             // Admin defaults
@@ -75,6 +79,11 @@ public class CreateEvent
                 return ApiResponses.Error(req, HttpStatusCode.BadRequest, "BAD_REQUEST", "eventDate, startTime, and endTime are required");
             if (string.IsNullOrWhiteSpace(title))
                 return ApiResponses.Error(req, HttpStatusCode.BadRequest, "BAD_REQUEST", "title is required");
+
+            if (!ScheduleValidation.TryValidateDate(eventDate, "eventDate", out var dateErr))
+                return ApiResponses.Error(req, HttpStatusCode.BadRequest, "BAD_REQUEST", dateErr);
+            if (!ScheduleValidation.TryValidateTimeRange(startTime, endTime, out var timeErr))
+                return ApiResponses.Error(req, HttpStatusCode.BadRequest, "BAD_REQUEST", timeErr);
 
             var table = await TableClients.GetTableAsync(_svc, EventsTableName);
             var eventId = "evt_" + Guid.NewGuid().ToString("N");
@@ -94,6 +103,8 @@ public class CreateEvent
                 ["StartTime"] = startTime,
                 ["EndTime"] = endTime,
                 ["Location"] = location,
+                ["Sport"] = sport,
+                ["Skill"] = skill,
                 ["Notes"] = notes,
                 // Keep both keys for compatibility.
                 ["CreatedBy"] = me.UserId,
@@ -135,6 +146,8 @@ public class CreateEvent
                 startTime,
                 endTime,
                 location,
+                sport,
+                skill,
                 notes,
                 createdByUserId = me.UserId,
                 createdUtc = now,
