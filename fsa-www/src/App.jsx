@@ -3,6 +3,41 @@ import { useIsAuthenticated, useMsal } from '@azure/msal-react'
 import './App.css'
 import { apiConfig, loginRequest } from './authConfig'
 
+const API_BASE = import.meta.env.VITE_API_BASE_URL ?? ''
+
+async function apiFetch(path, { leagueId, body, method = 'GET' } = {}) {
+  const headers = {}
+  if (leagueId) {
+    headers['x-league-id'] = leagueId
+  }
+  if (body) {
+    headers['Content-Type'] = 'application/json'
+  }
+
+  const response = await fetch(`${API_BASE}${path}`, {
+    method,
+    headers,
+    body: body ? JSON.stringify(body) : undefined,
+  })
+
+  const text = await response.text()
+  let data = null
+  if (text) {
+    try {
+      data = JSON.parse(text)
+    } catch (err) {
+      data = { message: text }
+    }
+  }
+
+  if (!response.ok) {
+    const message = data?.message || data?.error || response.statusText
+    throw new Error(message)
+  }
+
+  return data
+}
+
 function App() {
   const { instance, accounts } = useMsal()
   const isAuthenticated = useIsAuthenticated()
