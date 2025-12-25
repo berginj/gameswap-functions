@@ -43,12 +43,12 @@ public class DivisionsFunctions
 
             var table = await TableClients.GetTableAsync(_svc, Constants.Tables.Divisions);
             var list = new List<DivisionDto>();
-            await foreach (var e in table.QueryAsync<TableEntity>(x => x.PartitionKey == DivPk(leagueId)))
+            await foreach (var e in table.QueryAsync<DivisionEntity>(x => x.PartitionKey == DivPk(leagueId)))
             {
                 list.Add(new DivisionDto(
                     code: e.RowKey,
-                    name: (e.GetString("Name") ?? "").Trim(),
-                    isActive: e.GetBoolean("IsActive") ?? true
+                    name: (e.Name ?? "").Trim(),
+                    isActive: e.IsActive
                 ));
             }
 
@@ -85,14 +85,18 @@ public class DivisionsFunctions
             if (string.IsNullOrWhiteSpace(name))
                 return ApiResponses.Error(req, HttpStatusCode.BadRequest, "BAD_REQUEST", "name is required");
 
+            var now = DateTimeOffset.UtcNow;
             var table = await TableClients.GetTableAsync(_svc, Constants.Tables.Divisions);
-            var e = new TableEntity(DivPk(leagueId), code)
+            var e = new DivisionEntity
             {
-                ["LeagueId"] = leagueId,
-                ["Code"] = code,
-                ["Name"] = name,
-                ["IsActive"] = isActive,
-                ["UpdatedUtc"] = DateTimeOffset.UtcNow
+                PartitionKey = DivPk(leagueId),
+                RowKey = code,
+                LeagueId = leagueId,
+                Code = code,
+                Name = name,
+                IsActive = isActive,
+                CreatedUtc = now,
+                UpdatedUtc = now
             };
 
             try
@@ -130,23 +134,23 @@ public class DivisionsFunctions
                 return ApiResponses.Error(req, HttpStatusCode.BadRequest, "BAD_REQUEST", "Invalid JSON body");
 
             var table = await TableClients.GetTableAsync(_svc, Constants.Tables.Divisions);
-            TableEntity e;
+            DivisionEntity e;
             try
             {
-                e = (await table.GetEntityAsync<TableEntity>(DivPk(leagueId), code)).Value;
+                e = (await table.GetEntityAsync<DivisionEntity>(DivPk(leagueId), code)).Value;
             }
             catch (RequestFailedException ex) when (ex.Status == 404)
             {
                 return ApiResponses.Error(req, HttpStatusCode.NotFound, "NOT_FOUND", "division not found");
             }
 
-            if (!string.IsNullOrWhiteSpace(body.name)) e["Name"] = body.name!.Trim();
-            if (body.isActive.HasValue) e["IsActive"] = body.isActive.Value;
-            e["UpdatedUtc"] = DateTimeOffset.UtcNow;
+            if (!string.IsNullOrWhiteSpace(body.name)) e.Name = body.name!.Trim();
+            if (body.isActive.HasValue) e.IsActive = body.isActive.Value;
+            e.UpdatedUtc = DateTimeOffset.UtcNow;
 
             await table.UpdateEntityAsync(e, e.ETag, TableUpdateMode.Replace);
 
-            return ApiResponses.Ok(req, new DivisionDto(code, (e.GetString("Name") ?? "").Trim(), e.GetBoolean("IsActive") ?? true));
+            return ApiResponses.Ok(req, new DivisionDto(code, (e.Name ?? "").Trim(), e.IsActive));
         }
         catch (ApiGuards.HttpError ex) { return ApiResponses.FromHttpError(req, ex); }
         catch (Exception ex)

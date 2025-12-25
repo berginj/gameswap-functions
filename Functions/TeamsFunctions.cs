@@ -25,16 +25,16 @@ public class TeamsFunctions
 
     private static string TeamPk(string leagueId, string division) => $"TEAM#{leagueId}#{division}";
 
-    private static TeamDto ToDto(TableEntity e)
+    private static TeamDto ToDto(TeamEntity e)
     {
         return new TeamDto(
-            division: (e.GetString("Division") ?? "").Trim(),
+            division: (e.Division ?? "").Trim(),
             teamId: e.RowKey,
-            name: (e.GetString("Name") ?? "").Trim(),
+            name: (e.Name ?? "").Trim(),
             primaryContact: new ContactDto(
-                name: (e.GetString("PrimaryContactName") ?? "").Trim(),
-                email: (e.GetString("PrimaryContactEmail") ?? "").Trim(),
-                phone: (e.GetString("PrimaryContactPhone") ?? "").Trim()
+                name: (e.PrimaryContactName ?? "").Trim(),
+                email: (e.PrimaryContactEmail ?? "").Trim(),
+                phone: (e.PrimaryContactPhone ?? "").Trim()
             )
         );
     }
@@ -56,7 +56,7 @@ public class TeamsFunctions
 
             if (!string.IsNullOrWhiteSpace(division))
             {
-                await foreach (var e in table.QueryAsync<TableEntity>(x => x.PartitionKey == TeamPk(leagueId, division)))
+                await foreach (var e in table.QueryAsync<TeamEntity>(x => x.PartitionKey == TeamPk(leagueId, division)))
                     list.Add(ToDto(e));
             }
             else
@@ -64,7 +64,7 @@ public class TeamsFunctions
                 var prefix = $"TEAM#{leagueId}#";
                 var next = prefix + "~";
                 var filter = $"PartitionKey ge '{ApiGuards.EscapeOData(prefix)}' and PartitionKey lt '{ApiGuards.EscapeOData(next)}'";
-                await foreach (var e in table.QueryAsync<TableEntity>(filter: filter))
+                await foreach (var e in table.QueryAsync<TeamEntity>(filter: filter))
                     list.Add(ToDto(e));
             }
 
@@ -99,17 +99,21 @@ public class TeamsFunctions
             if (string.IsNullOrWhiteSpace(division) || string.IsNullOrWhiteSpace(teamId) || string.IsNullOrWhiteSpace(name))
                 return ApiResponses.Error(req, HttpStatusCode.BadRequest, "BAD_REQUEST", "division, teamId, and name are required");
 
+            var now = DateTimeOffset.UtcNow;
             var table = await TableClients.GetTableAsync(_svc, Constants.Tables.Teams);
-            var e = new TableEntity(TeamPk(leagueId, division), teamId)
+            var e = new TeamEntity
             {
-                ["LeagueId"] = leagueId,
-                ["Division"] = division,
-                ["TeamId"] = teamId,
-                ["Name"] = name,
-                ["PrimaryContactName"] = (body.primaryContact?.name ?? "").Trim(),
-                ["PrimaryContactEmail"] = (body.primaryContact?.email ?? "").Trim(),
-                ["PrimaryContactPhone"] = (body.primaryContact?.phone ?? "").Trim(),
-                ["UpdatedUtc"] = DateTimeOffset.UtcNow
+                PartitionKey = TeamPk(leagueId, division),
+                RowKey = teamId,
+                LeagueId = leagueId,
+                Division = division,
+                TeamId = teamId,
+                Name = name,
+                PrimaryContactName = (body.primaryContact?.name ?? "").Trim(),
+                PrimaryContactEmail = (body.primaryContact?.email ?? "").Trim(),
+                PrimaryContactPhone = (body.primaryContact?.phone ?? "").Trim(),
+                CreatedUtc = now,
+                UpdatedUtc = now
             };
 
             try
@@ -148,26 +152,26 @@ public class TeamsFunctions
                 return ApiResponses.Error(req, HttpStatusCode.BadRequest, "BAD_REQUEST", "Invalid JSON body");
 
             var table = await TableClients.GetTableAsync(_svc, Constants.Tables.Teams);
-            TableEntity e;
+            TeamEntity e;
             try
             {
-                e = (await table.GetEntityAsync<TableEntity>(TeamPk(leagueId, division), teamId)).Value;
+                e = (await table.GetEntityAsync<TeamEntity>(TeamPk(leagueId, division), teamId)).Value;
             }
             catch (RequestFailedException ex) when (ex.Status == 404)
             {
                 return ApiResponses.Error(req, HttpStatusCode.NotFound, "NOT_FOUND", "team not found");
             }
 
-            if (!string.IsNullOrWhiteSpace(body.name)) e["Name"] = body.name!.Trim();
+            if (!string.IsNullOrWhiteSpace(body.name)) e.Name = body.name!.Trim();
 
             if (body.primaryContact is not null)
             {
-                e["PrimaryContactName"] = (body.primaryContact.name ?? "").Trim();
-                e["PrimaryContactEmail"] = (body.primaryContact.email ?? "").Trim();
-                e["PrimaryContactPhone"] = (body.primaryContact.phone ?? "").Trim();
+                e.PrimaryContactName = (body.primaryContact.name ?? "").Trim();
+                e.PrimaryContactEmail = (body.primaryContact.email ?? "").Trim();
+                e.PrimaryContactPhone = (body.primaryContact.phone ?? "").Trim();
             }
 
-            e["UpdatedUtc"] = DateTimeOffset.UtcNow;
+            e.UpdatedUtc = DateTimeOffset.UtcNow;
             await table.UpdateEntityAsync(e, e.ETag, TableUpdateMode.Replace);
 
             return ApiResponses.Ok(req, ToDto(e));
