@@ -1,3 +1,10 @@
+:root {
+  color-scheme: light;
+  font-family: 'Inter', system-ui, sans-serif;
+  color: #1f2933;
+  background-color: #f5f7fb;
+}
+
 #root {
   max-width: 960px;
   margin: 0 auto;

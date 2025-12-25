@@ -1,7 +1,5 @@
 using System.Net;
 using System.Linq;
-using System.Text;
-using System.Text.RegularExpressions;
 using Azure;
 using Azure.Data.Tables;
 using Microsoft.Azure.Functions.Worker;
@@ -202,140 +200,160 @@ public class ImportFields
 
     private static class MultipartFormData
     {
-        public static Task<byte[]?> ReadFirstFileBytesAsync(byte[] body, string contentType, string preferName)
+        try
         {
-            var boundary = ExtractBoundary(contentType);
+            var leagueId = ApiGuards.RequireLeagueId(req);
+            var me = IdentityUtil.GetMe(req);
+            await ApiGuards.RequireLeagueAdminAsync(_svc, me.UserId, leagueId);
 
-            // If Content-Type was wrong, try to infer boundary from the first line: --BOUNDARY
-            if (string.IsNullOrWhiteSpace(boundary))
+            var payload = await ImportHelpers.ReadGridPayloadAsync(req);
+            if (payload is null)
+                return ApiResponses.Error(req, HttpStatusCode.BadRequest, "BAD_REQUEST", "Invalid JSON body.");
+
+            var rows = ImportHelpers.BuildRowsFromGrid(payload);
+            if (rows.Count < 2)
+                return ApiResponses.Error(req, HttpStatusCode.BadRequest, "BAD_REQUEST", "No rows found.");
+
+            return await ImportFromRowsAsync(req, leagueId, rows);
+        }
+        catch (ApiGuards.HttpError ex) { return ApiResponses.FromHttpError(req, ex); }
+        catch (RequestFailedException ex)
+        {
+            var requestId = req.FunctionContext.InvocationId.ToString();
+            _log.LogError(ex, "ImportFields storage request failed. requestId={requestId}", requestId);
+            return ApiResponses.Error(
+                req,
+                HttpStatusCode.BadGateway,
+                "STORAGE_ERROR",
+                "Storage request failed.",
+                new { requestId, status = ex.Status, code = ex.ErrorCode });
+        }
+        catch (Exception ex)
+        {
+            _log.LogError(ex, "ImportFields failed");
+            return ApiResponses.Error(
+                req,
+                HttpStatusCode.InternalServerError,
+                "INTERNAL",
+                "Internal Server Error",
+                new { exception = ex.GetType().Name, message = ex.Message });
+        }
+    }
+
+    private async Task<HttpResponseData> ImportFromRowsAsync(HttpRequestData req, string leagueId, List<string[]> rows)
+    {
+        var header = rows[0];
+        if (header.Length > 0 && header[0] != null)
+            header[0] = header[0].TrimStart('\uFEFF'); // strip BOM
+
+        var idx = CsvMini.HeaderIndex(header);
+
+        if (!idx.ContainsKey("fieldkey") || !idx.ContainsKey("parkname") || !idx.ContainsKey("fieldname"))
+        {
+            var headerPreview = string.Join(",", header.Select(x => (x ?? "").Trim()).Take(12));
+            return ApiResponses.Error(req, HttpStatusCode.BadRequest, "BAD_REQUEST",
+                "Missing required columns. Required: fieldKey, parkName, fieldName. Optional: displayName, address, notes, status (Active/Inactive).",
+                new { headerPreview });
+        }
+
+        var table = await TableClients.GetTableAsync(_svc, Constants.Tables.Fields);
+
+        int upserted = 0, rejected = 0, skipped = 0;
+        var errors = new List<ImportHelpers.ImportError>();
+        var actions = new List<TableTransactionAction>();
+
+        for (int i = 1; i < rows.Count; i++)
+        {
+            var r = rows[i];
+            if (CsvMini.IsBlankRow(r)) { skipped++; continue; }
+
+            var fieldKeyRaw = CsvMini.Get(r, idx, "fieldkey").Trim();
+            var parkName = CsvMini.Get(r, idx, "parkname").Trim();
+            var fieldName = CsvMini.Get(r, idx, "fieldname").Trim();
+
+            var displayName = CsvMini.Get(r, idx, "displayname").Trim();
+            var address = CsvMini.Get(r, idx, "address").Trim();
+            var notes = CsvMini.Get(r, idx, "notes").Trim();
+
+            var statusRaw = CsvMini.Get(r, idx, "status").Trim();
+            var isActiveRaw = CsvMini.Get(r, idx, "isactive").Trim();
+
+            var rowNumber = i + 1;
+            bool hasError = false;
+
+            if (string.IsNullOrWhiteSpace(fieldKeyRaw))
             {
-                var firstLineEnd = IndexOf(body, Encoding.UTF8.GetBytes("\r\n"), 0);
-                if (firstLineEnd > 2)
-                {
-                    var firstLine = Encoding.UTF8.GetString(body, 0, firstLineEnd).Trim();
-                    if (firstLine.StartsWith("--") && firstLine.Length > 4)
-                        boundary = firstLine.Substring(2);
-                }
+                errors.Add(new ImportHelpers.ImportError(rowNumber, "fieldKey", "fieldKey is required."));
+                hasError = true;
             }
 
-            if (string.IsNullOrWhiteSpace(boundary)) return Task.FromResult<byte[]?>(null);
-
-            var boundaryBytes = Encoding.UTF8.GetBytes("--" + boundary);
-            var endBoundaryBytes = Encoding.UTF8.GetBytes("--" + boundary + "--");
-            var parts = SplitMultipart(body, boundaryBytes, endBoundaryBytes);
-
-            // Preferred name first
-            foreach (var part in parts)
+            if (string.IsNullOrWhiteSpace(parkName))
             {
-                var file = TryGetFilePart(part, preferNameOnly: true, preferName: preferName);
-                if (file != null) return Task.FromResult<byte[]?>(file);
+                errors.Add(new ImportHelpers.ImportError(rowNumber, "parkName", "parkName is required."));
+                hasError = true;
             }
 
-            // Any file
-            foreach (var part in parts)
+            if (string.IsNullOrWhiteSpace(fieldName))
             {
-                var file = TryGetFilePart(part, preferNameOnly: false, preferName: preferName);
-                if (file != null) return Task.FromResult<byte[]?>(file);
+                errors.Add(new ImportHelpers.ImportError(rowNumber, "fieldName", "fieldName is required."));
+                hasError = true;
             }
 
-            return Task.FromResult<byte[]?>(null);
-        }
-
-        private static byte[]? TryGetFilePart(byte[] part, bool preferNameOnly, string preferName)
-        {
-            var headerEnd = IndexOf(part, Encoding.UTF8.GetBytes("\r\n\r\n"), 0);
-            if (headerEnd < 0) return null;
-
-            var headerText = Encoding.UTF8.GetString(part, 0, headerEnd);
-            var contentStart = headerEnd + 4;
-
-            var cd = GetContentDisposition(headerText);
-            if (cd == null) return null;
-
-            var name = cd.Value.name ?? "";
-            var filename = cd.Value.filename ?? "";
-            if (string.IsNullOrWhiteSpace(filename)) return null;
-
-            if (preferNameOnly && !string.Equals(name, preferName, StringComparison.OrdinalIgnoreCase))
-                return null;
-
-            var content = part.AsSpan(contentStart).ToArray();
-            if (content.Length >= 2 && content[^2] == (byte)'\r' && content[^1] == (byte)'\n')
-                content = content[..^2];
-            return content;
-        }
-
-        private static string ExtractBoundary(string contentType)
-        {
-            if (string.IsNullOrWhiteSpace(contentType)) return "";
-            var m = Regex.Match(contentType, @"boundary=(?:""(?<b>[^""]+)""|(?<b>[^;]+))", RegexOptions.IgnoreCase);
-            return m.Success ? m.Groups["b"].Value.Trim() : "";
-        }
-
-        private static (string? name, string? filename)? GetContentDisposition(string headers)
-        {
-            var lines = headers.Split(new[] { "\r\n" }, StringSplitOptions.RemoveEmptyEntries);
-            foreach (var line in lines)
+            if (hasError)
             {
-                if (!line.StartsWith("Content-Disposition:", StringComparison.OrdinalIgnoreCase)) continue;
-                var name = Regex.Match(line, @"name=(?:""(?<n>[^""]+)""|(?<n>[^;]+))", RegexOptions.IgnoreCase);
-                var fn = Regex.Match(line, @"filename=(?:""(?<f>[^""]+)""|(?<f>[^;]+))", RegexOptions.IgnoreCase);
-                return (name.Success ? name.Groups["n"].Value : null, fn.Success ? fn.Groups["f"].Value : null);
+                rejected++;
+                continue;
             }
-            return null;
-        }
 
-        private static List<byte[]> SplitMultipart(byte[] body, byte[] boundary, byte[] endBoundary)
-        {
-            var parts = new List<byte[]>();
-            int pos = IndexOf(body, boundary, 0);
-            if (pos < 0) return parts;
-
-            while (pos >= 0)
+            if (!TryParseFieldKeyFlexible(fieldKeyRaw, parkName, fieldName, out var parkCode, out var fieldCode, out var normalizedFieldKey))
             {
-                pos += boundary.Length;
-                if (pos + 2 <= body.Length && body[pos] == (byte)'\r' && body[pos + 1] == (byte)'\n') pos += 2;
-
-                if (pos - boundary.Length >= 0 && StartsWithAt(body, pos - boundary.Length, endBoundary))
-                    break;
-
-                var next = IndexOf(body, boundary, pos);
-                var nextEnd = IndexOf(body, endBoundary, pos);
-
-                int cut = (nextEnd >= 0 && (next < 0 || nextEnd < next)) ? nextEnd : next;
-                if (cut < 0) break;
-
-                var len = cut - pos;
-                if (len > 0)
-                {
-                    var part = new byte[len];
-                    Buffer.BlockCopy(body, pos, part, 0, len);
-                    parts.Add(part);
-                }
-                pos = cut;
+                rejected++;
+                errors.Add(new ImportHelpers.ImportError(rowNumber, "fieldKey",
+                    "Invalid fieldKey. Use parkCode/fieldCode or parkCode_fieldCode, or valid parkName/fieldName.", fieldKeyRaw));
+                continue;
             }
-            return parts;
-        }
 
-        private static bool StartsWithAt(byte[] haystack, int start, byte[] needle)
-        {
-            if (start < 0 || start + needle.Length > haystack.Length) return false;
-            for (int i = 0; i < needle.Length; i++)
-                if (haystack[start + i] != needle[i]) return false;
-            return true;
-        }
+            if (string.IsNullOrWhiteSpace(displayName))
+                displayName = $"{parkName} > {fieldName}";
 
-        private static int IndexOf(byte[] haystack, byte[] needle, int start)
-        {
-            if (needle.Length == 0) return -1;
-            for (int i = start; i <= haystack.Length - needle.Length; i++)
+            var isActive = ParseIsActive(statusRaw, isActiveRaw);
+
+            var pk = Constants.Pk.Fields(leagueId, parkCode);
+            var rk = fieldCode;
+
+            notes = AppendOptionalFieldNotes(notes, r, idx);
+
+            var entity = new TableEntity(pk, rk)
             {
-                bool match = true;
-                for (int j = 0; j < needle.Length; j++)
-                    if (haystack[i + j] != needle[j]) { match = false; break; }
-                if (match) return i;
+                ["LeagueId"] = leagueId,
+                ["FieldKey"] = normalizedFieldKey,
+                ["ParkCode"] = parkCode,
+                ["FieldCode"] = fieldCode,
+                ["ParkName"] = parkName,
+                ["FieldName"] = fieldName,
+                ["DisplayName"] = displayName,
+                ["Address"] = address,
+                ["Notes"] = notes,
+                ["IsActive"] = isActive,
+                ["UpdatedUtc"] = DateTimeOffset.UtcNow
+            };
+
+            actions.Add(new TableTransactionAction(TableTransactionActionType.UpsertMerge, entity));
+
+            if (actions.Count == 100)
+            {
+                var result = await table.SubmitTransactionAsync(actions);
+                upserted += result.Value.Count;
+                actions.Clear();
             }
-            return -1;
         }
+
+        if (actions.Count > 0)
+        {
+            var result = await table.SubmitTransactionAsync(actions);
+            upserted += result.Value.Count;
+        }
+
+        return ApiResponses.Ok(req, new { leagueId, upserted, rejected, skipped, errors });
     }
 }

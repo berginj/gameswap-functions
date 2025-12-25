@@ -38,6 +38,113 @@ async function apiFetch(path, { leagueId, body, method = 'GET' } = {}) {
   return data
 }
 
+const IMPORT_TYPES = [
+  {
+    key: 'fields',
+    label: 'Fields',
+    csvHeaders: [
+      'fieldKey',
+      'parkName',
+      'fieldName',
+      'displayName',
+      'address',
+      'notes',
+      'status',
+      'isActive',
+      'lights',
+      'battingCage',
+      'portableMound',
+      'fieldLockCode',
+      'fieldNotes'
+    ]
+  },
+  {
+    key: 'teams',
+    label: 'Teams',
+    csvHeaders: [
+      'division',
+      'teamId',
+      'name',
+      'primaryContactName',
+      'primaryContactEmail',
+      'primaryContactPhone'
+    ]
+  },
+  {
+    key: 'events',
+    label: 'Events',
+    csvHeaders: [
+      'type',
+      'division',
+      'teamId',
+      'title',
+      'eventDate',
+      'startTime',
+      'endTime',
+      'location',
+      'notes',
+      'status'
+    ]
+  }
+]
+
+const parseCsv = (text) => {
+  const rows = []
+  let row = []
+  let field = ''
+  let inQuotes = false
+
+  for (let i = 0; i < text.length; i += 1) {
+    const c = text[i]
+    if (inQuotes) {
+      if (c === '"') {
+        if (text[i + 1] === '"') {
+          field += '"'
+          i += 1
+        } else {
+          inQuotes = false
+        }
+      } else {
+        field += c
+      }
+    } else if (c === '"') {
+      inQuotes = true
+    } else if (c === ',') {
+      row.push(field)
+      field = ''
+    } else if (c === '\n') {
+      row.push(field)
+      rows.push(row)
+      row = []
+      field = ''
+    } else if (c !== '\r') {
+      field += c
+    }
+  }
+
+  row.push(field)
+  rows.push(row)
+  return rows
+}
+
+const parseGridText = (text) => {
+  const lines = text.replace(/\r\n/g, '\n').replace(/\r/g, '\n').split('\n')
+  return lines.filter((line) => line.trim().length > 0).map((line) => line.split('\t'))
+}
+
+const downloadCsvTemplate = (headers, filename) => {
+  const csv = `${headers.join(',')}\n`
+  const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' })
+  const url = URL.createObjectURL(blob)
+  const link = document.createElement('a')
+  link.href = url
+  link.download = filename
+  document.body.appendChild(link)
+  link.click()
+  document.body.removeChild(link)
+  URL.revokeObjectURL(url)
+}
+
 function App() {
   const { instance, accounts } = useMsal()
   const isAuthenticated = useIsAuthenticated()
