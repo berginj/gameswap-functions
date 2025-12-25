@@ -34,6 +34,12 @@ jobs:
           npm ci --prefix fsa-www
           npm run --prefix fsa-www build
 
+      - name: Install Playwright Browsers
+        run: npx --prefix fsa-www playwright install --with-deps
+
+      - name: Run UI Tests
+        run: npm --prefix fsa-www run test:e2e
+
       - name: Setup DotNet ${{ env.DOTNET_VERSION }} Environment
         uses: actions/setup-dotnet@v1
         with:
@@ -43,6 +49,7 @@ jobs:
         shell: bash
         run: |
           pushd './${{ env.AZURE_FUNCTIONAPP_PACKAGE_PATH }}'
+          dotnet test ./tests/GameSwap.Functions.Tests/GameSwap.Functions.Tests.csproj --configuration Release
           dotnet build --configuration Release --output ./output
           popd
       

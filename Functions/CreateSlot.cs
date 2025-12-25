@@ -49,38 +49,23 @@ public class CreateSlot
             var body = await HttpUtil.ReadJsonAsync<CreateSlotReq>(req);
             if (body is null) return ApiResponses.Error(req, HttpStatusCode.BadRequest, "BAD_REQUEST", "Invalid JSON body");
 
-            var division = (body.division ?? "").Trim();
-            var offeringTeamId = (body.offeringTeamId ?? "").Trim();
-            var offeringEmail = (body.offeringEmail ?? me.Email ?? "").Trim();
+            if (!CreateSlotValidation.TryValidate(body, me.Email ?? "", out var payload, out var validationError))
+                return ApiResponses.Error(req, HttpStatusCode.BadRequest, "BAD_REQUEST", validationError);
 
-            var gameDate = (body.gameDate ?? "").Trim();
-            var startTime = (body.startTime ?? "").Trim();
-            var endTime = (body.endTime ?? "").Trim();
+            var division = payload.Division;
+            var offeringTeamId = payload.OfferingTeamId;
+            var offeringEmail = payload.OfferingEmail;
 
-            var fieldKey = (body.fieldKey ?? "").Trim();
+            var gameDate = payload.GameDate;
+            var startTime = payload.StartTime;
+            var endTime = payload.EndTime;
+
+            var fieldKey = payload.FieldKeyRaw;
             var parkName = (body.parkName ?? "").Trim();   // optional (back-compat)
             var fieldName = (body.fieldName ?? "").Trim(); // optional (back-compat)
 
-            var gameType = string.IsNullOrWhiteSpace(body.gameType) ? "Swap" : body.gameType!.Trim();
-            var notes = (body.notes ?? "").Trim();
-
-            if (string.IsNullOrWhiteSpace(division) ||
-                string.IsNullOrWhiteSpace(offeringTeamId) ||
-                string.IsNullOrWhiteSpace(gameDate) ||
-                string.IsNullOrWhiteSpace(startTime) ||
-                string.IsNullOrWhiteSpace(endTime) ||
-                string.IsNullOrWhiteSpace(fieldKey))
-            {
-                return ApiResponses.Error(req, HttpStatusCode.BadRequest, "BAD_REQUEST",
-                    "division, offeringTeamId, gameDate, startTime, endTime, fieldKey are required");
-            }
-
-            // Validate date/time formats (times are interpreted as US/Eastern per contract; stored as strings)
-            if (!DateOnly.TryParseExact(gameDate, "yyyy-MM-dd", out _))
-                return ApiResponses.Error(req, HttpStatusCode.BadRequest, "BAD_REQUEST", "gameDate must be YYYY-MM-DD.");
-
-            if (!TimeUtil.IsValidRange(startTime, endTime, out _, out _, out var timeErr))
-                return ApiResponses.Error(req, HttpStatusCode.BadRequest, "BAD_REQUEST", timeErr);
+            var gameType = payload.GameType;
+            var notes = payload.Notes;
 
             // Enforce Coach restrictions: coach can only create slots for their assigned team/division.
             var isGlobalAdmin = await ApiGuards.IsGlobalAdminAsync(_svc, me.UserId);
@@ -105,8 +90,8 @@ public class CreateSlot
 
             // Validate field exists + active.
             var fieldsTable = await TableClients.GetTableAsync(_svc, FieldsTableName);
-            if (!TryParseFieldKey(fieldKey, out var parkCode, out var fieldCode))
-                return ApiResponses.Error(req, HttpStatusCode.BadRequest, "BAD_REQUEST", "fieldKey must be parkCode/fieldCode.");
+            var parkCode = payload.ParkCode;
+            var fieldCode = payload.FieldCode;
 
             var fieldPk = Constants.Pk.Fields(leagueId, parkCode);
             var fieldRk = fieldCode;
@@ -184,16 +169,4 @@ public class CreateSlot
         }
     }
 
-    private static bool TryParseFieldKey(string raw, out string parkCode, out string fieldCode)
-    {
-        parkCode = "";
-        fieldCode = "";
-        var v = (raw ?? "").Trim().Trim('/');
-        var parts = v.Split('/', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
-        if (parts.Length != 2) return false;
-
-        parkCode = Slug.Make(parts[0]);
-        fieldCode = Slug.Make(parts[1]);
-        return !string.IsNullOrWhiteSpace(parkCode) && !string.IsNullOrWhiteSpace(fieldCode);
-    }
 }
